@@ -69,7 +69,7 @@ FROM DOOR_RAW
 GROUP BY room_id
 EMIT CHANGES;
 
--- ===== 规则前置（仅 CR-101 / CR-102，阈值 10 / 12 分钟）=====
+-- ===== 规则前置（CR-101 ~ CR-105，对应 R01-R05）=====
 CREATE STREAM AFTER_HOURS_EVAL WITH (KAFKA_TOPIC='iot.afterhours.eval', PARTITIONS=1) AS
 SELECT
   T.room_id AS room_id,
@@ -80,12 +80,23 @@ SELECT
   CASE
     WHEN T.room_id = 'CR-101' THEN 10
     WHEN T.room_id = 'CR-102' THEN 12
+    WHEN T.room_id = 'CR-103' THEN 8
+    WHEN T.room_id = 'CR-104' THEN 10
+    WHEN T.room_id = 'CR-105' THEN 10
     ELSE 9999
-  END AS threshold_min
+  END AS threshold_min,
+  CASE
+    WHEN T.room_id = 'CR-101' THEN 'R01'
+    WHEN T.room_id = 'CR-102' THEN 'R02'
+    WHEN T.room_id = 'CR-103' THEN 'R03'
+    WHEN T.room_id = 'CR-104' THEN 'R04'
+    WHEN T.room_id = 'CR-105' THEN 'R05'
+    ELSE 'R00'
+  END AS rule_id
 FROM TICKER T
 LEFT JOIN LAST_MOTION L ON T.room_id = L.room_id
 LEFT JOIN DOOR_STATE  D ON T.room_id = D.room_id
-WHERE T.room_id IN ('CR-101','CR-102')
+WHERE T.room_id IN ('CR-101','CR-102','CR-103','CR-104','CR-105')
 EMIT CHANGES;
 
 -- ===== 触发条件 =====
@@ -98,7 +109,8 @@ SELECT
   now_ms,
   door_closed,
   (now_ms - last_motion_ms) AS idle_ms,
-  threshold_min
+  threshold_min,
+  rule_id
 FROM AFTER_HOURS_EVAL
 WHERE door_closed = TRUE
   AND last_motion_ms IS NOT NULL
@@ -122,6 +134,20 @@ CREATE STREAM IOT_COMMANDS (
   PARTITIONS=1
 );
 
+CREATE STREAM IOT_ALERTS (
+  rule STRING,
+  roomId STRING,
+  action STRING,
+  temp DOUBLE,
+  rise DOUBLE,
+  msg STRING,
+  ts BIGINT
+) WITH (
+  KAFKA_TOPIC='iot.alerts',
+  VALUE_FORMAT='JSON',
+  PARTITIONS=1
+);
+
 -- 灯光命令（OFF/0）
 INSERT INTO IOT_COMMANDS
 SELECT
@@ -129,7 +155,10 @@ SELECT
   site_id,
   'LIGHT' AS device_id,
   'switch' AS cmd,
-  '{"cmd":"OFF","level":0}' AS args,
+  CASE
+    WHEN rule_id = 'R05' THEN '{"cmd":"DIM","target":0,"duration":30}'
+    ELSE '{"cmd":"OFF","level":0}'
+  END AS args,
   '' AS corr_id,
   CAST(now_ms AS STRING) AS ts
 FROM TRIGGERS
@@ -145,5 +174,20 @@ SELECT
   '{"cmd":"ECO","setpoint":24.0}' AS args,
   '' AS corr_id,
   CAST(now_ms AS STRING) AS ts
+FROM TRIGGERS
+EMIT CHANGES;
+
+INSERT INTO IOT_ALERTS
+SELECT
+  rule_id AS rule,
+  room_id AS roomId,
+  CASE
+    WHEN rule_id = 'R05' THEN 'LIGHTS_DIM_TO_ZERO + HVAC_ECO'
+    ELSE 'LIGHTS_OFF + HVAC_ECO'
+  END AS action,
+  CAST(NULL AS DOUBLE) AS temp,
+  CAST(NULL AS DOUBLE) AS rise,
+  'After-hours auto-off rule triggered' AS msg,
+  now_ms AS ts
 FROM TRIGGERS
 EMIT CHANGES;
