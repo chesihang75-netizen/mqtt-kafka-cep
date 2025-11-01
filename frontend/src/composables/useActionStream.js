@@ -6,8 +6,8 @@ const buildWsUrl = (baseUrl) => {
     url.pathname = url.pathname.replace(/\/$/, '') + '/ws/actions';
     return url.toString();
   } catch (error) {
-    console.warn('无法解析 WebSocket 地址，使用默认值 ws://localhost:8080/ws/actions', error);
-    return 'ws://localhost:8080/ws/actions';
+    console.warn('无法解析 WebSocket 地址，使用默认值 ws://localhost:8090/ws/actions', error);
+    return 'ws://localhost:8090/ws/actions';
   }
 };
 
@@ -17,8 +17,8 @@ const buildRestUrl = (baseUrl) => {
     url.pathname = url.pathname.replace(/\/$/, '') + '/api/actions';
     return url.toString();
   } catch (error) {
-    console.warn('无法解析 API 地址，使用默认值 http://localhost:8080/api/actions', error);
-    return 'http://localhost:8080/api/actions';
+    console.warn('无法解析 API 地址，使用默认值 http://localhost:8090/api/actions', error);
+    return 'http://localhost:8090/api/actions';
   }
 };
 
@@ -29,7 +29,7 @@ export const useActionStream = () => {
   const reconnectAttempts = ref(0);
   let reconnectTimer = null;
 
-  const baseUrl = import.meta.env.VITE_ACTION_API_BASE_URL || 'http://localhost:8080';
+  const baseUrl = import.meta.env.VITE_ACTION_API_BASE_URL || 'http://localhost:8090';
   const restUrl = buildRestUrl(baseUrl);
   const wsUrl = buildWsUrl(baseUrl);
 

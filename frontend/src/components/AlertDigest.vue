@@ -2,9 +2,9 @@
   <section class="rounded-xl border border-slate-700/60 bg-slate-900/70 p-6 shadow-lg">
     <header class="mb-4 flex items-center justify-between">
       <div>
-        <h2 class="text-lg font-semibold text-slate-100">iot.alert 去重列表</h2>
+        <h2 class="text-lg font-semibold text-slate-100">iot.alerts 去重列表</h2>
         <p class="text-xs text-slate-400">
-          通过 Kafka iot.alert 主题聚合最近的唯一动作，自动去重重复告警。
+          通过 Kafka iot.alerts 主题聚合最近的唯一动作，自动去重重复告警。
         </p>
       </div>
       <div class="flex items-center gap-2">
@@ -26,7 +26,7 @@
     </header>
 
     <p v-if="error" class="mb-3 rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-200">
-      无法读取 iot.alert 数据：{{ error.message }}
+      无法读取 iot.alerts 数据：{{ error.message }}
     </p>
 
     <ul v-if="alerts.length" class="space-y-3">
@@ -59,7 +59,7 @@
 
     <div v-else class="flex flex-col items-center justify-center gap-2 py-10 text-sm text-slate-500">
       <span class="text-xl">🛰️</span>
-      <span>暂未收到任何 iot.alert 消息</span>
+      <span>暂未收到任何 iot.alerts 消息</span>
       <span class="text-xs text-slate-600">请确认 Kafka 管道是否产生告警</span>
     </div>
   </section>

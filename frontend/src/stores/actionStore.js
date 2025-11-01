@@ -48,7 +48,7 @@ export const useActionStore = defineStore('actions', () => {
       try {
         alertStore = useAlertStore();
       } catch (err) {
-        console.warn('初始化 alertStore 失败，将跳过同步 iot.alert 去重面板', err);
+        console.warn('初始化 alertStore 失败，将跳过同步 iot.alerts 去重面板', err);
       }
     }
 

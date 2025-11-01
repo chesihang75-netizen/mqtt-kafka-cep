@@ -2,7 +2,7 @@ import { defineStore } from 'pinia';
 import { computed, ref } from 'vue';
 import { buildFingerprint } from '../utils/fingerprint';
 
-const DEFAULT_ENDPOINT = 'http://localhost:8080/api/clusters/local/topics/iot.alert/messages';
+const DEFAULT_ENDPOINT = 'http://localhost:8080/api/clusters/local/topics/iot.alerts/messages';
 const DEFAULT_LIMIT = Number(import.meta.env.VITE_ALERT_FETCH_LIMIT || 200);
 const DEFAULT_METHOD = (import.meta.env.VITE_ALERT_FETCH_METHOD || 'POST').toUpperCase();
 
@@ -45,7 +45,7 @@ const parseKafkaMessage = (message) => {
     raw: content,
     timestamp:
       content.timestamp || content.eventTime || message.timestamp || new Date().toISOString(),
-    source: content.source || content.ruleId || content.sensor || message.topic || 'iot.alert',
+    source: content.source || content.ruleId || content.sensor || message.topic || 'iot.alerts',
   };
 };
 
@@ -124,7 +124,7 @@ export const useAlertStore = defineStore('alertStream', () => {
     try {
       const response = await fetch(endpoint, buildRequestInit());
       if (!response.ok) {
-        throw new Error(`获取 iot.alert 消息失败：${response.status}`);
+        throw new Error(`获取 iot.alerts 消息失败：${response.status}`);
       }
 
       const contentType = response.headers.get('content-type') || '';
@@ -147,12 +147,12 @@ export const useAlertStore = defineStore('alertStream', () => {
             try {
               ingest(JSON.parse(line));
             } catch (err) {
-              console.warn('无法解析的 iot.alert 行数据', line);
+              console.warn('无法解析的 iot.alerts 行数据', line);
             }
           });
       }
     } catch (err) {
-      console.error('加载 iot.alert 消息失败', err);
+      console.error('加载 iot.alerts 消息失败', err);
       error.value = err;
     } finally {
       loading.value = false;
