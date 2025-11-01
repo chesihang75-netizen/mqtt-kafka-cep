@@ -1,0 +1,121 @@
+@App:name("KafkaIotPipeline")
+
+/* --------- INPUT: Kafka -> IotInStream (JSON) --------- */
+@source(
+  type='kafka',
+  bootstrap.servers='kafka:9093',
+  topic.list='iot.input',
+  group.id='siddhi-json',
+  threading.option='single.thread',
+  optional.configuration='auto.offset.reset=earliest',
+  @map(type='json', fail.on.missing.attribute='false')
+)
+define stream IotInStream (
+  roomId string,
+  deviceId string,
+  ts long,
+  temp double,
+  motion bool,
+  co2 long
+);
+
+/* --------- OUTPUT: Kafka -> iot.alerts (JSON) --------- */
+@sink(
+  type='kafka',
+  bootstrap.servers='kafka:9093',
+  topic='iot.alerts',
+  @map(type='json')
+)
+define stream Alerts (
+  rule string,
+  roomId string,
+  action string,
+  temp double,
+  rise double,
+  msg string,
+  ts long
+);
+
+/* ================= Rules ================= */
+
+/* R11: CR-101 temp > 26 for 10m AND motion => setpoint -1 (min 22) */
+from IotInStream[roomId == 'CR-101' and motion == true]
+#window.time(10 min)
+select
+  'R11' as rule,
+  roomId,
+  'SETPOINT_DEC' as action,
+  max(temp) as temp,
+  (max(temp) - min(temp)) as rise,
+  'Temp > 26 for 10m with motion: decrease setpoint by 1C (min 22C)' as msg,
+  max(ts) as ts
+having min(temp) > 26.0
+insert into Alerts;
+
+/* R12: CR-102 temp < 20 for 10m AND motion => setpoint +1 (max 24) */
+from IotInStream[roomId == 'CR-102' and motion == true]
+#window.time(10 min)
+select
+  'R12' as rule,
+  roomId,
+  'SETPOINT_INC' as action,
+  max(temp) as temp,
+  (max(temp) - min(temp)) as rise,
+  'Temp < 20 for 10m with motion: increase setpoint by 1C (max 24C)' as msg,
+  max(ts) as ts
+having max(temp) < 20.0
+insert into Alerts;
+
+/* R13: CR-103 temp > 27 for 5m AND motion => HVAC BOOST */
+from IotInStream[roomId == 'CR-103' and motion == true]
+#window.time(5 min)
+select
+  'R13' as rule,
+  roomId,
+  'HVAC_BOOST' as action,
+  max(temp) as temp,
+  (max(temp) - min(temp)) as rise,
+  'Temp > 27 for 5m with motion: HVAC BOOST' as msg,
+  max(ts) as ts
+having min(temp) > 27.0
+insert into Alerts;
+
+/* R14: CR-104 temp rising > 2C in 10m AND motion => alert HVAC check */
+from IotInStream[roomId == 'CR-104' and motion == true]
+#window.time(10 min)
+select
+  'R14' as rule,
+  roomId,
+  'ALERT_HVAC_CHECK' as action,
+  max(temp) as temp,
+  (max(temp) - min(temp)) as rise,
+  'Temp rising > 2C in 10m with motion: HVAC check' as msg,
+  max(ts) as ts
+having (max(temp) - min(temp)) > 2.0
+insert into Alerts;
+
+/* R15 (分两步：先聚合到中间流 R15Agg，再从中间流过滤入 Alerts)
+   不显式 define 中间流，避免额外的 'define' 关键字引起解析歧义  */
+
+/* Step 1: 聚合（含 max CO2）→ 中间流 R15Agg */
+from IotInStream[roomId == 'CR-105']
+#window.time(15 min)
+select
+  roomId,
+  max(temp) as temp,
+  (max(temp) - min(temp)) as rise,
+  max(co2) as max_co2,
+  max(ts) as ts
+insert into R15Agg;
+
+/* Step 2: 从中间流过滤到 Alerts（Alerts 无 co2 字段，不再在 HAVING 中使用 co2） */
+from R15Agg[(temp > 25.0) and (max_co2 > 1000)]
+select
+  'R15' as rule,
+  roomId,
+  'BOOST_ALERT' as action,
+  temp,
+  rise,
+  'Temp > 25 for 15m and CO2 > 1000: BOOST + alert stuffy room' as msg,
+  ts
+insert into Alerts;
