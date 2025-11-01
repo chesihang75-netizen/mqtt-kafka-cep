@@ -5,6 +5,7 @@
 ## 功能特性
 
 - 📡 WebSocket 主通道：依赖 Kafka→WebSocket 桥接实时推送，REST 仅在需要时可选开启
+- 🚨 连接状态提示：若桥接未启动会在页首标记离线并提供 Retry 按钮与错误详情
 - 🎛️ 快速筛选：按关键字、优先级、是否完成过滤
 - 📊 概览卡片：实时统计当前任务量、高优先级和 24 小时内触发次数
 - 🕒 时间轴视图：快速掌握最新 10 条 Action 的上下文
@@ -20,14 +21,14 @@ npm run dev
 ```
 
 默认会在 `http://localhost:8091` 启动开发服务器，若端口被占用可通过环境变量 `VITE_DEV_SERVER_PORT` 覆盖。前端会默认尝试连接
-`ws://localhost:8090/ws/actions`，请确保已启动 Kafka→WebSocket 桥（见下文）或在 `.env.local` 中指定 `VITE_ACTION_WS_BASE_URL`。
+`ws://localhost:8090/ws/actions`，请确保已启动 Kafka→WebSocket 桥（见下文）或在 `.env.local` 中指定 `VITE_ACTION_WS_BASE_URL`。若桥接暂未可用，页面顶部会显示 `Stream offline` 提示，并可点击 Retry 重新发起连接。
 
 > **注意**：如果运行环境限制访问 npm 官方源，可以将 `.npmrc` 配置为内网镜像或者使用离线包。
 
 ## 与后端对接
 
 - WebSocket 接口（实时推送，必需）：`WS {BASE_URL}/ws/actions`
-- REST 接口（历史加载，可选）：`GET {BASE_URL}/api/actions`
+- REST 接口（历史加载，可选）：`GET {BASE_URL}/api/actions?limit=200`
 
 ### Kafka → WebSocket 桥（kafka-websocket-bridge）
 
@@ -44,10 +45,13 @@ docker-compose up -d kafka-websocket-bridge
 - Kafka Brokers：`kafka:9093`
 - 订阅主题：`iot.alerts`
 
+该桥接同时暴露 `GET http://localhost:8090/api/actions` 接口，会返回最近缓冲的去重 Action 记录，供前端初始化列表或手动排查使用。
+
 如需在浏览器访问其他主机或端口，可在 `frontend/.env.local` 中设置：
 
 ```bash
 VITE_ACTION_WS_BASE_URL=ws://your-host:8090
+VITE_ACTION_MAX_RECONNECT=6                     # 重连次数（>0 为有限次，<=0 表示持续重试）
 ```
 
 若您额外提供 REST 历史接口，可设置 `VITE_ACTION_REST_URL` 或 `VITE_ACTION_API_BASE_URL` 启用初始拉取；未配置时前端仅依赖 WebSocket。

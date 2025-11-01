@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia';
-import { ref } from 'vue';
+import { computed, ref } from 'vue';
 import dayjs from 'dayjs';
 import { useActionStream } from '../composables/useActionStream';
 import { useAlertStore } from './alertStore';
@@ -18,6 +18,7 @@ export const useActionStore = defineStore('actions', () => {
   const lastUpdated = ref(null);
   const stream = useActionStream();
   let alertStore;
+  let streamHandler;
 
   const normalizeAction = (item) => ({
     id: item.id || createId(),
@@ -76,13 +77,15 @@ export const useActionStore = defineStore('actions', () => {
     loading.value = false;
     lastUpdated.value = new Date();
 
-    stream.connect((payload) => {
+    streamHandler = (payload) => {
       if (Array.isArray(payload)) {
         payload.forEach(upsertAction);
       } else {
         upsertAction(payload);
       }
-    });
+    };
+
+    stream.connect(streamHandler);
   };
 
   const buildSummary = () => {
@@ -111,5 +114,16 @@ export const useActionStore = defineStore('actions', () => {
     init,
     buildSummary,
     toggleAcknowledged,
+    streamConnected: computed(() => stream.connected.value),
+    streamError: computed(() => stream.error.value),
+    reconnectAttempts: computed(() => stream.reconnectAttempts.value),
+    maxReconnectAttempts: computed(() => stream.maxReconnectAttempts),
+    retryStream: () => {
+      if (streamHandler) {
+        stream.forceReconnect();
+      } else {
+        init();
+      }
+    },
   };
 });

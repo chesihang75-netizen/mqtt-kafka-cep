@@ -24,10 +24,60 @@ const consumer = kafka.consumer({
   allowAutoTopicCreation: true,
 });
 
+const allowCors = (res) => {
+  res.setHeader('access-control-allow-origin', '*');
+  res.setHeader('access-control-allow-methods', 'GET,OPTIONS');
+  res.setHeader('access-control-allow-headers', 'content-type');
+};
+
+const buildSnapshot = () =>
+  Array.from(recentMap.values()).sort((a, b) => {
+    const left = new Date(a.kafkaTimestamp || a.timestamp || a.receivedAt).getTime();
+    const right = new Date(b.kafkaTimestamp || b.timestamp || b.receivedAt).getTime();
+    return right - left;
+  });
+
 const server = http.createServer((req, res) => {
-  if (req.url === '/healthz') {
+  if (!req.url) {
+    res.writeHead(400);
+    res.end();
+    return;
+  }
+
+  if (req.method === 'OPTIONS') {
+    allowCors(res);
+    res.writeHead(204);
+    res.end();
+    return;
+  }
+
+  if (req.url.startsWith('/healthz')) {
+    allowCors(res);
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ status: 'ok' }));
+    return;
+  }
+
+  if (req.url.startsWith('/api/actions')) {
+    try {
+      const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+      const limitParam = url.searchParams.get('limit');
+      let limit = Number.parseInt(limitParam ?? '', 10);
+      if (!Number.isFinite(limit) || limit <= 0) {
+        limit = undefined;
+      }
+
+      const snapshot = buildSnapshot();
+      const payload = typeof limit === 'number' ? snapshot.slice(0, limit) : snapshot;
+
+      allowCors(res);
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(payload));
+    } catch (error) {
+      console.error('Failed to serve /api/actions', error);
+      res.writeHead(500, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: 'failed to serve actions snapshot' }));
+    }
     return;
   }
 
@@ -152,11 +202,7 @@ const broadcast = (payload) => {
 };
 
 wss.on('connection', (socket) => {
-  const snapshot = Array.from(recentMap.values()).sort((a, b) => {
-    const left = new Date(a.kafkaTimestamp || a.timestamp || a.receivedAt).getTime();
-    const right = new Date(b.kafkaTimestamp || b.timestamp || b.receivedAt).getTime();
-    return right - left;
-  });
+  const snapshot = buildSnapshot();
 
   if (snapshot.length > 0) {
     socket.send(JSON.stringify(snapshot));
