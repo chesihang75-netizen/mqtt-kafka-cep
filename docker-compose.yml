@@ -97,6 +97,17 @@ services:
       TICKER_ROOM_IDS: "CR-101,CR-102,CR-103,CR-104,CR-105"
       TICKER_SITE_ID: "MAIN"
 
+  # ---------- Dashboard ----------
+  dashboard:
+    build: ./dashboard
+    container_name: dashboard
+    restart: unless-stopped
+    depends_on: [kafka]
+    ports: ["8000:8000"]
+    environment:
+      KAFKA_BOOTSTRAP: "kafka:9093"
+      DASHBOARD_ROOMS: "CR-101,CR-102,CR-103,CR-104,CR-105"
+
   # ---------- Siddhi Runner ----------
   siddhi-runner:
     image: siddhiio/siddhi-runner-alpine:latest

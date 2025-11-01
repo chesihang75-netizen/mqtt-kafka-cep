@@ -40,7 +40,11 @@ def on_message(client, userdata, msg):
         "room_id": payload.get("room_id") or room_id or "UNKNOWN",
         "device_id": payload.get("device_id") or device_id or "unknown",
         "type": type_ or "sensor.unknown",
-        "motion_active": None, "temp_value": None, "door_closed": None,
+        "motion_active": None,
+        "temp_value": None,
+        "door_closed": None,
+        "co2_value": None,
+        "lux_value": None,
     }
     if type_ == "sensor.motion":
         out["motion_active"] = bool(data.get("active"))
@@ -52,6 +56,14 @@ def on_message(client, userdata, msg):
             out["door_closed"] = bool(data["closed"])
         elif "state" in data:
             out["door_closed"] = str(data["state"]).lower() in ("closed","close","1","true")
+    elif type_ == "sensor.co2":
+        try: out["co2_value"] = float(data.get("ppm"))
+        except Exception:
+            try: out["co2_value"] = float(data.get("value"))
+            except Exception: out["co2_value"] = None
+    elif type_ == "sensor.lux":
+        try: out["lux_value"] = float(data.get("value"))
+        except Exception: out["lux_value"] = None
     key = out["room_id"]
     producer.send(KAFKA_TOPIC, key=key, value=out)
     producer.flush()

@@ -38,13 +38,83 @@ define stream Alerts (
 
 /* ================= Rules ================= */
 
+/* R06: CR-101 CO2 > 1000 ppm for 5m AND motion => HVAC BOOST */
+from IotInStream[roomId == 'CR-101' and motion == true]
+#window.time(5 min)
+select
+  'R06' as rule,
+  roomId,
+  'HVAC_BOOST' as action,
+  max(temp) as temp,
+  (max(temp) - min(temp)) as rise,
+  'CO2 > 1000 ppm for 5m with motion: HVAC BOOST' as msg,
+  max(ts) as ts
+having max(co2) > 1000.0
+insert into Alerts;
+
+/* R07: CR-102 CO2 > 950 ppm for 5m AND motion => HVAC BOOST */
+from IotInStream[roomId == 'CR-102' and motion == true]
+#window.time(5 min)
+select
+  'R07' as rule,
+  roomId,
+  'HVAC_BOOST' as action,
+  max(temp) as temp,
+  (max(temp) - min(temp)) as rise,
+  'CO2 > 950 ppm for 5m with motion: HVAC BOOST' as msg,
+  max(ts) as ts
+having max(co2) > 950.0
+insert into Alerts;
+
+/* R08: CR-103 CO2 > 1100 ppm for 3m AND motion => HVAC BOOST */
+from IotInStream[roomId == 'CR-103' and motion == true]
+#window.time(3 min)
+select
+  'R08' as rule,
+  roomId,
+  'HVAC_BOOST' as action,
+  max(temp) as temp,
+  (max(temp) - min(temp)) as rise,
+  'CO2 > 1100 ppm for 3m with motion: HVAC BOOST' as msg,
+  max(ts) as ts
+having max(co2) > 1100.0
+insert into Alerts;
+
+/* R09: CR-104 CO2 > 1000 ppm for 5m AND motion => HVAC BOOST */
+from IotInStream[roomId == 'CR-104' and motion == true]
+#window.time(5 min)
+select
+  'R09' as rule,
+  roomId,
+  'HVAC_BOOST' as action,
+  max(temp) as temp,
+  (max(temp) - min(temp)) as rise,
+  'CO2 > 1000 ppm for 5m with motion: HVAC BOOST' as msg,
+  max(ts) as ts
+having max(co2) > 1000.0
+insert into Alerts;
+
+/* R10: CR-105 CO2 > 900 ppm for 7m AND motion => HVAC BOOST */
+from IotInStream[roomId == 'CR-105' and motion == true]
+#window.time(7 min)
+select
+  'R10' as rule,
+  roomId,
+  'HVAC_BOOST' as action,
+  max(temp) as temp,
+  (max(temp) - min(temp)) as rise,
+  'CO2 > 900 ppm for 7m with motion: HVAC BOOST' as msg,
+  max(ts) as ts
+having max(co2) > 900.0
+insert into Alerts;
+
 /* R11: CR-101 temp > 26 for 10m AND motion => setpoint -1 (min 22) */
 from IotInStream[roomId == 'CR-101' and motion == true]
 #window.time(10 min)
 select
   'R11' as rule,
   roomId,
-  'SETPOINT_DEC' as action,
+  'SETPOINT_DEC_1C' as action,
   max(temp) as temp,
   (max(temp) - min(temp)) as rise,
   'Temp > 26 for 10m with motion: decrease setpoint by 1C (min 22C)' as msg,
@@ -58,7 +128,7 @@ from IotInStream[roomId == 'CR-102' and motion == true]
 select
   'R12' as rule,
   roomId,
-  'SETPOINT_INC' as action,
+  'SETPOINT_INC_1C' as action,
   max(temp) as temp,
   (max(temp) - min(temp)) as rise,
   'Temp < 20 for 10m with motion: increase setpoint by 1C (max 24C)' as msg,
@@ -113,9 +183,9 @@ from R15Agg[(temp > 25.0) and (max_co2 > 1000)]
 select
   'R15' as rule,
   roomId,
-  'BOOST_ALERT' as action,
+  'HVAC_BOOST_ALERT' as action,
   temp,
   rise,
-  'Temp > 25 for 15m and CO2 > 1000: BOOST + alert stuffy room' as msg,
+  'Temp > 25 for 15m and CO2 > 1000: BOOST + alert "stuffy room"' as msg,
   ts
 insert into Alerts;
