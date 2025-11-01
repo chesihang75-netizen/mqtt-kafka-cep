@@ -2,6 +2,8 @@ import { defineStore } from 'pinia';
 import { ref } from 'vue';
 import dayjs from 'dayjs';
 import { useActionStream } from '../composables/useActionStream';
+import { useAlertStore } from './alertStore';
+import { buildFingerprint } from '../utils/fingerprint';
 
 const createId = () => {
   if (typeof crypto !== 'undefined' && crypto.randomUUID) {
@@ -15,9 +17,11 @@ export const useActionStore = defineStore('actions', () => {
   const loading = ref(false);
   const lastUpdated = ref(null);
   const stream = useActionStream();
+  let alertStore;
 
   const normalizeAction = (item) => ({
     id: item.id || createId(),
+    fingerprint: buildFingerprint(item),
     action: item.action || item.msg || '未命名 Action',
     description: item.description || item.reason || item.message || '',
     severity: item.severity || item.priority || 'medium',
@@ -30,13 +34,25 @@ export const useActionStore = defineStore('actions', () => {
 
   const upsertAction = (payload) => {
     const next = normalizeAction(payload);
-    const index = actions.value.findIndex((item) => item.id === next.id);
+    const index = actions.value.findIndex(
+      (item) => item.id === next.id || (next.fingerprint && item.fingerprint === next.fingerprint)
+    );
     if (index >= 0) {
       actions.value.splice(index, 1, next);
     } else {
       actions.value.unshift(next);
     }
     lastUpdated.value = new Date();
+
+    if (!alertStore) {
+      try {
+        alertStore = useAlertStore();
+      } catch (err) {
+        console.warn('初始化 alertStore 失败，将跳过同步 iot.alert 去重面板', err);
+      }
+    }
+
+    alertStore?.ingest?.(payload);
   };
 
   const toggleAcknowledged = (id) => {

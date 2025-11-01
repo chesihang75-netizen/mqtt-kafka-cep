@@ -8,6 +8,7 @@
 - 🎛️ 快速筛选：按关键字、优先级、是否完成过滤
 - 📊 概览卡片：实时统计当前任务量、高优先级和 24 小时内触发次数
 - 🕒 时间轴视图：快速掌握最新 10 条 Action 的上下文
+- 🛰️ iot.alert 去重列表：自动汇总 Kafka `iot.alert` 主题的唯一告警
 - 🌙 夜间作战主题：深色界面更适合运维值守场景
 
 ## 快速开始
@@ -34,3 +35,19 @@ VITE_ACTION_API_BASE_URL=http://your-host:8080
 ```
 
 如果尚未准备好实时接口，也可以在 `actionStore.ts` 中将 `stream.fetchInitial()` 替换为本地 mock 数据，界面仍会正常显示。
+
+## iot.alert 唯一告警面板
+
+右侧新增的「iot.alert 去重列表」会通过 Kafka UI 或自建 API 拉取 `iot.alert` 主题，解析消息内容后按 Action 指纹去重，只保留最新的一条相同告警。
+
+默认会尝试连接 `http://localhost:8080/api/clusters/local/topics/iot.alert/messages`（Kafka UI 内置接口，需同源或已处理 CORS）。如需自定义可在 `.env.local` 中配置：
+
+```bash
+VITE_ALERT_API_URL=http://your-host:8080/api/clusters/local/topics/iot.alert/messages
+VITE_ALERT_FETCH_METHOD=POST               # GET/POST/PUT，默认 POST
+VITE_ALERT_FETCH_LIMIT=200                 # 单次拉取的最大消息数
+# 如果目标接口需要特定 JSON 请求体，可直接写入
+# VITE_ALERT_FETCH_BODY='{"seekType":"BEGINNING","limit":50}'
+```
+
+> 提示：Kafka UI 的接口需要携带 Cookie 才能访问，可通过 Nginx 反向代理将前端与 Kafka UI 同域部署，或自建轻量转发服务（例如 Node/Express）以解决 CORS 与鉴权问题。

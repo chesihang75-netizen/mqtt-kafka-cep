@@ -12,6 +12,10 @@
             Stream connected
           </span>
           <span>Last sync: {{ lastSyncLabel }}</span>
+          <span class="hidden items-center gap-1 rounded-full border border-slate-700/70 bg-slate-900/60 px-3 py-1 text-[11px] text-slate-300 sm:inline-flex">
+            <span class="h-2 w-2 rounded-full bg-sky-400"></span>
+            唯一告警 {{ uniqueAlerts.length }} 条
+          </span>
         </div>
       </div>
     </header>
@@ -27,7 +31,10 @@
           @update:filter="filters = $event"
           @toggle="onToggle"
         />
-        <ActionTimeline :actions="actions" />
+        <div class="space-y-6">
+          <ActionTimeline :actions="actions" />
+          <AlertDigest />
+        </div>
       </div>
     </main>
   </div>
@@ -39,10 +46,15 @@ import { storeToRefs } from 'pinia';
 import ActionSummary from './components/ActionSummary.vue';
 import ActionTable from './components/ActionTable.vue';
 import ActionTimeline from './components/ActionTimeline.vue';
+import AlertDigest from './components/AlertDigest.vue';
 import { useActionStore } from './stores/actionStore';
+import { useAlertStore } from './stores/alertStore';
 
 const store = useActionStore();
 const { actions, loading, lastUpdated } = storeToRefs(store);
+
+const alertStore = useAlertStore();
+const { alerts: uniqueAlerts } = storeToRefs(alertStore);
 
 onMounted(() => {
   store.init();
