@@ -22,6 +22,7 @@ npm run dev
 
 默认会在 `http://localhost:8091` 启动开发服务器，若端口被占用可通过环境变量 `VITE_DEV_SERVER_PORT` 覆盖。前端会默认尝试连接
 `ws://localhost:8090/ws/actions`，请确保已启动 Kafka→WebSocket 桥（见下文）或在 `.env.local` 中指定 `VITE_ACTION_WS_BASE_URL`。若桥接暂未可用，页面顶部会显示 `Stream offline` 提示，并可点击 Retry 重新发起连接。
+未显式配置 `VITE_ACTION_REST_URL` 或 `VITE_ACTION_API_BASE_URL` 时，初始化阶段不会触发额外的 HTTP 请求，可避免 `Failed to fetch` 等错误刷屏。
 
 > **注意**：如果运行环境限制访问 npm 官方源，可以将 `.npmrc` 配置为内网镜像或者使用离线包。
 
@@ -55,6 +56,7 @@ VITE_ACTION_MAX_RECONNECT=6                     # 重连次数（>0 为有限次
 ```
 
 若您额外提供 REST 历史接口，可设置 `VITE_ACTION_REST_URL` 或 `VITE_ACTION_API_BASE_URL` 启用初始拉取；未配置时前端仅依赖 WebSocket。
+这样即使 WebSocket 桥暂未就绪，控制台也只会提示连接失败，不会额外报出 `Failed to fetch` 等 HTTP 错误。
 
 ## iot.alerts 唯一告警面板
 

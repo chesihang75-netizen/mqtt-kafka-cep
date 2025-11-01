@@ -67,8 +67,7 @@ export const useActionStream = () => {
     (import.meta.env.VITE_ACTION_WS_BASE_URL || import.meta.env.VITE_ACTION_API_BASE_URL || '').trim() ||
     resolveDefaultWsBase();
   const restBase =
-    (import.meta.env.VITE_ACTION_REST_URL || import.meta.env.VITE_ACTION_API_BASE_URL || '').trim() ||
-    wsBase;
+    (import.meta.env.VITE_ACTION_REST_URL || import.meta.env.VITE_ACTION_API_BASE_URL || '').trim();
 
   const wsUrl = buildWsUrl(wsBase);
   const restUrl = restBase ? buildRestUrl(restBase) : null;
