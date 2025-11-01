@@ -5,7 +5,7 @@ import { buildFingerprint } from '../utils/fingerprint';
 const RAW_ALERT_URL = (import.meta.env.VITE_ALERT_API_URL || '').trim();
 const DEFAULT_TOPIC = (import.meta.env.VITE_ALERT_TOPIC || 'iot.alerts').trim();
 const DEFAULT_CLUSTER = (import.meta.env.VITE_ALERT_CLUSTER || 'local').trim();
-const DEFAULT_HOST = (import.meta.env.VITE_ALERT_API_HOST || 'http://localhost:8080').trim();
+const DEFAULT_HOST = (import.meta.env.VITE_ALERT_API_HOST || '').trim();
 
 let DEFAULT_ENDPOINT = '';
 if (RAW_ALERT_URL) {
@@ -129,7 +129,9 @@ export const useAlertStore = defineStore('alertStream', () => {
 
   const fetchAlerts = async () => {
     if (!endpoint) {
-      error.value = new Error('未配置 iot.alerts 拉取地址，已跳过初始化加载');
+      console.info('未配置 iot.alerts 拉取地址，将仅依赖实时 WebSocket 数据');
+      error.value = null;
+      loading.value = false;
       return;
     }
 
@@ -189,6 +191,7 @@ export const useAlertStore = defineStore('alertStream', () => {
     loading,
     error,
     lastFetched,
+    canRefresh: computed(() => Boolean(endpoint)),
     fetchAlerts,
     ingest,
     reset,

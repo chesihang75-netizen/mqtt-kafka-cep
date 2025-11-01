@@ -5,6 +5,8 @@ const buildWsUrl = (baseUrl) => {
     const normalized = baseUrl || '';
     const wsBase = normalized.startsWith('http')
       ? normalized.replace(/^http/, 'ws')
+      : normalized.startsWith('ws')
+      ? normalized
       : `ws://${normalized.replace(/^ws?:\/\//, '')}`;
     const url = new URL(wsBase);
     url.pathname = url.pathname.replace(/\/$/, '') + '/ws/actions';
@@ -25,8 +27,8 @@ const buildRestUrl = (baseUrl) => {
     url.pathname = url.pathname.replace(/\/$/, '') + '/api/actions';
     return url.toString();
   } catch (error) {
-    console.warn('无法解析 API 地址，使用默认值 http://localhost:8090/api/actions', error);
-    return 'http://localhost:8090/api/actions';
+    console.warn('无法解析 API 地址，已禁用 REST 初始加载', error);
+    return null;
   }
 };
 
@@ -37,12 +39,27 @@ export const useActionStream = () => {
   const reconnectAttempts = ref(0);
   let reconnectTimer = null;
 
-  const fallbackBaseUrl =
-    import.meta.env.VITE_ACTION_API_BASE_URL ||
-    (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:8090');
-  const baseUrl = fallbackBaseUrl || 'http://localhost:8090';
-  const restUrl = buildRestUrl(baseUrl);
-  const wsUrl = buildWsUrl(baseUrl);
+  const resolveDefaultWsBase = () => {
+    if (typeof window === 'undefined') {
+      return 'ws://localhost:8090';
+    }
+    const { protocol, hostname, port } = window.location;
+    if (hostname === 'localhost' || hostname === '127.0.0.1') {
+      return port && port !== '8090'
+        ? `${protocol === 'https:' ? 'wss' : 'ws'}://localhost:8090`
+        : window.location.origin;
+    }
+    return window.location.origin;
+  };
+
+  const wsBase =
+    (import.meta.env.VITE_ACTION_WS_BASE_URL || import.meta.env.VITE_ACTION_API_BASE_URL || '').trim() ||
+    resolveDefaultWsBase();
+  const restBase =
+    (import.meta.env.VITE_ACTION_REST_URL || import.meta.env.VITE_ACTION_API_BASE_URL || '').trim();
+
+  const wsUrl = buildWsUrl(wsBase);
+  const restUrl = restBase ? buildRestUrl(restBase) : null;
 
   const clearReconnect = () => {
     if (reconnectTimer) {
@@ -60,6 +77,12 @@ export const useActionStream = () => {
   };
 
   const fetchInitial = async () => {
+    if (!restUrl) {
+      loading.value = false;
+      error.value = null;
+      return [];
+    }
+
     loading.value = true;
     try {
       const response = await fetch(restUrl, {

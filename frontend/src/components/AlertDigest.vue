@@ -9,8 +9,8 @@
       </div>
       <div class="flex items-center gap-2">
         <button
-          class="rounded-md border border-slate-600/60 px-3 py-1 text-sm text-slate-200 transition hover:border-sky-500/60 hover:text-sky-300"
-          :disabled="loading"
+          class="rounded-md border border-slate-600/60 px-3 py-1 text-sm text-slate-200 transition hover:border-sky-500/60 hover:text-sky-300 disabled:cursor-not-allowed disabled:opacity-40"
+          :disabled="loading || !canRefresh"
           @click="refresh"
         >
           <span v-if="!loading">刷新</span>
@@ -27,6 +27,12 @@
 
     <p v-if="error" class="mb-3 rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-200">
       无法读取 iot.alerts 数据：{{ error.message }}
+    </p>
+    <p
+      v-else-if="!canRefresh"
+      class="mb-3 rounded-md border border-slate-700/60 bg-slate-800/60 px-3 py-2 text-xs text-slate-300"
+    >
+      已切换为 WebSocket 实时去重，若需手动刷新请在环境变量中配置 Kafka UI API。
     </p>
 
     <ul v-if="alerts.length" class="space-y-3">
@@ -75,9 +81,13 @@ import { useAlertStore } from '../stores/alertStore';
 dayjs.extend(relativeTime);
 
 const alertStore = useAlertStore();
-const { alerts, loading, error, lastFetched } = storeToRefs(alertStore);
+const { alerts, loading, error, lastFetched, canRefresh } = storeToRefs(alertStore);
 
-const refresh = () => alertStore.fetchAlerts();
+const refresh = () => {
+  if (canRefresh.value) {
+    alertStore.fetchAlerts();
+  }
+};
 
 const timeAgo = computed(() =>
   lastFetched.value ? dayjs(lastFetched.value).fromNow() : '从未'
@@ -87,7 +97,7 @@ const formatTime = (value) => dayjs(value).format('YYYY-MM-DD HH:mm:ss');
 const formatRaw = (raw) => JSON.stringify(raw, null, 2);
 
 onMounted(() => {
-  if (!alerts.value.length) {
+  if (canRefresh.value && !alerts.value.length) {
     refresh();
   }
 });

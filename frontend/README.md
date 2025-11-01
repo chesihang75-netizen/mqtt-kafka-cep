@@ -4,7 +4,7 @@
 
 ## 功能特性
 
-- 📡 REST + WebSocket 双通道：初始加载历史 Action，同时监听实时推送
+- 📡 WebSocket 主通道：依赖 Kafka→WebSocket 桥接实时推送，REST 仅在需要时可选开启
 - 🎛️ 快速筛选：按关键字、优先级、是否完成过滤
 - 📊 概览卡片：实时统计当前任务量、高优先级和 24 小时内触发次数
 - 🕒 时间轴视图：快速掌握最新 10 条 Action 的上下文
@@ -19,38 +19,46 @@ npm install
 npm run dev
 ```
 
-默认会在 `http://localhost:8090` 启动开发服务器，若端口被占用可通过环境变量 `VITE_DEV_SERVER_PORT` 覆盖。也可以通过设定
-`VITE_ACTION_API_BASE_URL` 为实际服务地址，或在部署环境中依赖浏览器当前访问域名，前端会自动复用该地址。
+默认会在 `http://localhost:8091` 启动开发服务器，若端口被占用可通过环境变量 `VITE_DEV_SERVER_PORT` 覆盖。前端会默认尝试连接
+`ws://localhost:8090/ws/actions`，请确保已启动 Kafka→WebSocket 桥（见下文）或在 `.env.local` 中指定 `VITE_ACTION_WS_BASE_URL`。
 
 > **注意**：如果运行环境限制访问 npm 官方源，可以将 `.npmrc` 配置为内网镜像或者使用离线包。
 
 ## 与后端对接
 
-- REST 接口（初始加载）：`GET {BASE_URL}/api/actions`
-- WebSocket 接口（实时推送）：`WS {BASE_URL}/ws/actions`
+- WebSocket 接口（实时推送，必需）：`WS {BASE_URL}/ws/actions`
+- REST 接口（历史加载，可选）：`GET {BASE_URL}/api/actions`
 
-可以在根目录添加 `.env.local` 覆盖默认后端地址：
+### Kafka → WebSocket 桥（kafka-websocket-bridge）
+
+仓库根目录新增的 `ws-bridge` 服务会订阅 Kafka `iot.alerts` 主题，将解析后的 JSON 通过 WebSocket 推送给前端：
 
 ```bash
-VITE_ACTION_API_BASE_URL=http://your-host:8090
+docker-compose up -d kafka-websocket-bridge
 ```
 
-如果后端返回 HTML 或非 JSON 内容，界面会提示“Action API 返回非 JSON 响应”，请确认路径是否正确或配置了代理。如果尚未准备好实时接口，也可以在 `actionStore.js` 中将 `stream.fetchInitial()` 替换为本地 mock 数据，界面仍会正常显示。
+默认配置：
+
+- 监听端口：`8090`
+- WebSocket 地址：`ws://localhost:8090/ws/actions`
+- Kafka Brokers：`kafka:9093`
+- 订阅主题：`iot.alerts`
+
+如需在浏览器访问其他主机或端口，可在 `frontend/.env.local` 中设置：
+
+```bash
+VITE_ACTION_WS_BASE_URL=ws://your-host:8090
+```
+
+若您额外提供 REST 历史接口，可设置 `VITE_ACTION_REST_URL` 或 `VITE_ACTION_API_BASE_URL` 启用初始拉取；未配置时前端仅依赖 WebSocket。
 
 ## iot.alerts 唯一告警面板
 
-右侧新增的「iot.alerts 去重列表」会通过 Kafka UI 或自建 API 拉取 `iot.alerts` 主题，解析消息内容后按 Action 指纹去重，只保留最新的一条相同告警。
-
-默认会依据以下优先级选择数据源：
-
-1. `.env.local` 中显式配置的 `VITE_ALERT_API_URL`
-2. 使用 `VITE_ALERT_API_HOST`、`VITE_ALERT_CLUSTER`、`VITE_ALERT_TOPIC` 组合生成 Kafka UI API 地址
-3. 当未配置以上变量时会跳过初始化拉取，仅依赖实时 `actions` 流推送到去重列表
-
-典型配置示例：
+右侧的「iot.alerts 去重列表」默认直接复用 WebSocket 流推送的 Action 并按指纹去重，只保留每类告警的最新一条。当确实需要手动回溯时，
+可以在 `.env.local` 中提供 Kafka UI 或自建 API 的地址，刷新按钮会自动恢复可用：
 
 ```bash
-VITE_ALERT_API_HOST=http://your-host:8080              # Kafka UI 或转发服务地址
+VITE_ALERT_API_HOST=http://your-host:8080              # Kafka UI 或转发服务地址（可选）
 VITE_ALERT_CLUSTER=local                               # Kafka UI 中的 cluster 名称
 VITE_ALERT_TOPIC=iot.alerts                            # Siddhi 输出的 Topic 名称
 VITE_ALERT_API_URL=                                    # 若上方三项已满足可留空
@@ -60,4 +68,4 @@ VITE_ALERT_FETCH_LIMIT=200                 # 单次拉取的最大消息数
 # VITE_ALERT_FETCH_BODY='{"seekType":"BEGINNING","limit":50}'
 ```
 
-> 提示：Kafka UI 的接口需要携带 Cookie 才能访问，可通过 Nginx 反向代理将前端与 Kafka UI 同域部署，或自建轻量转发服务（例如 Node/Express）以解决 CORS 与鉴权问题。当接口返回 HTML 等非 JSON 内容时，面板会给出“i/o 响应不是合法 JSON”的提示，以便快速定位配置问题。
+未配置上述变量时，去重面板会提示当前采用纯 WebSocket 实时模式，不会再访问 Kafka UI REST API。

@@ -87,6 +87,19 @@ services:
     restart: unless-stopped
     depends_on: [mqtt, kafka]
 
+  # ---------- Kafka -> WebSocket Bridge ----------
+  kafka-websocket-bridge:
+    build: ./ws-bridge
+    container_name: kafka-websocket-bridge
+    restart: unless-stopped
+    depends_on: [kafka]
+    ports: ["8090:8090"]
+    environment:
+      WS_PORT: 8090
+      KAFKA_BROKERS: kafka:9093
+      KAFKA_TOPIC: iot.alerts
+      KAFKA_GROUP_ID: iot-alerts-bridge
+
   # ---------- 心跳 Ticker ----------
   ticker:
     build: ./ticker
