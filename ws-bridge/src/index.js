@@ -1,252 +1,75 @@
+// src/index.js  (Node >=16, CommonJS)
 const http = require('http');
-const { WebSocketServer, WebSocket } = require('ws');
-const { Kafka, logLevel } = require('kafkajs');
-const crypto = require('crypto');
+const { WebSocketServer } = require('ws');
+const { Kafka } = require('kafkajs');
+const { parse } = require('url');
 
-const PORT = parseInt(process.env.WS_PORT || '8090', 10);
-const TOPIC = process.env.KAFKA_TOPIC || 'iot.alerts';
-const GROUP_ID = process.env.KAFKA_GROUP_ID || 'iot-alert-bridge';
-const BROKERS = (process.env.KAFKA_BROKERS || 'kafka:9093')
+// 先读环境变量，未设置则用默认值（主机直连本机 Kafka）
+const PORT    = Number(process.env.WS_PORT) || 8090;
+const WS_PATH = process.env.WS_PATH || '/ws/actions';
+const TOPIC   = process.env.KAFKA_TOPIC || 'iot.alerts';
+const BROKERS = (process.env.KAFKA_BROKERS || 'localhost:9092')
   .split(',')
-  .map((entry) => entry.trim())
+  .map(s => s.trim())
   .filter(Boolean);
-const BUFFER_SIZE = parseInt(process.env.BRIDGE_BUFFER_SIZE || '200', 10);
-const FROM_BEGINNING = process.env.KAFKA_FROM_BEGINNING === 'true';
 
-const kafka = new Kafka({
-  clientId: process.env.KAFKA_CLIENT_ID || 'iot-alert-websocket',
-  brokers: BROKERS,
-  logLevel: logLevel.INFO,
-});
-
-const consumer = kafka.consumer({
-  groupId: GROUP_ID,
-  allowAutoTopicCreation: true,
-});
-
-const allowCors = (res) => {
-  res.setHeader('access-control-allow-origin', '*');
-  res.setHeader('access-control-allow-methods', 'GET,OPTIONS');
-  res.setHeader('access-control-allow-headers', 'content-type');
-};
-
-const buildSnapshot = () =>
-  Array.from(recentMap.values()).sort((a, b) => {
-    const left = new Date(a.kafkaTimestamp || a.timestamp || a.receivedAt).getTime();
-    const right = new Date(b.kafkaTimestamp || b.timestamp || b.receivedAt).getTime();
-    return right - left;
-  });
-
+// ----- HTTP server（含 /health），同端口升级为 WS -----
 const server = http.createServer((req, res) => {
-  if (!req.url) {
-    res.writeHead(400);
-    res.end();
-    return;
+  if (req.url === '/health') {
+    res.writeHead(200, {'Content-Type':'text/plain'}); res.end('OK');
+  } else {
+    res.writeHead(404); res.end('Not Found');
   }
+});
+server.listen(PORT, () =>
+  console.log(`HTTP/WS listening on http://localhost:${PORT} (WS ${WS_PATH})`)
+);
 
-  if (req.method === 'OPTIONS') {
-    allowCors(res);
-    res.writeHead(204);
-    res.end();
-    return;
+// ----- 仅允许指定路径的 WebSocket -----
+const wss = new WebSocketServer({ noServer: true });
+const clients = new Set();
+
+server.on('upgrade', (req, socket, head) => {
+  const { pathname } = parse(req.url);
+  if (pathname !== WS_PATH) {
+    socket.write('HTTP/1.1 404 Not Found\r\n\r\n'); socket.destroy(); return;
   }
-
-  if (req.url.startsWith('/healthz')) {
-    allowCors(res);
-    res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ status: 'ok' }));
-    return;
-  }
-
-  if (req.url.startsWith('/api/actions')) {
-    try {
-      const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-      const limitParam = url.searchParams.get('limit');
-      let limit = Number.parseInt(limitParam ?? '', 10);
-      if (!Number.isFinite(limit) || limit <= 0) {
-        limit = undefined;
-      }
-
-      const snapshot = buildSnapshot();
-      const payload = typeof limit === 'number' ? snapshot.slice(0, limit) : snapshot;
-
-      allowCors(res);
-      res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify(payload));
-    } catch (error) {
-      console.error('Failed to serve /api/actions', error);
-      res.writeHead(500, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ error: 'failed to serve actions snapshot' }));
-    }
-    return;
-  }
-
-  res.writeHead(404);
-  res.end();
+  wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
 });
 
-const wss = new WebSocketServer({ server, path: '/ws/actions' });
+wss.on('connection', (ws) => {
+  clients.add(ws);
+  ws.on('close', () => clients.delete(ws));
+  ws.on('error', e => console.error('WS client error:', e.message));
+  ws.send(JSON.stringify({ type: 'hello', msg: 'connected to ws-bridge' }));
+});
 
-const recentOrder = [];
-const recentMap = new Map();
-
-const randomId = () =>
-  typeof crypto.randomUUID === 'function'
-    ? crypto.randomUUID()
-    : crypto.randomBytes(16).toString('hex');
-
-const fingerprint = (payload) => {
-  try {
-    const json = JSON.stringify(payload);
-    return crypto.createHash('sha1').update(json).digest('hex');
-  } catch (error) {
-    return null;
-  }
-};
-
-const unwrapValue = (value) => {
-  if (value == null) {
-    return null;
-  }
-
-  if (Buffer.isBuffer(value)) {
-    return unwrapValue(value.toString('utf8'));
-  }
-
-  if (typeof value === 'string') {
-    const trimmed = value.trim();
-    if (!trimmed) {
-      return {};
-    }
-    try {
-      return JSON.parse(trimmed);
-    } catch (error) {
-      return { message: value };
-    }
-  }
-
-  if (typeof value === 'object') {
-    if (value.payload !== undefined) {
-      return unwrapValue(value.payload);
-    }
-    if (value.data !== undefined) {
-      return unwrapValue(value.data);
-    }
-    if (value.value !== undefined) {
-      return unwrapValue(value.value);
-    }
-    return value;
-  }
-
-  return { message: value };
-};
-
-const normalizePayload = (message) => {
-  if (!message) {
-    return {};
-  }
-
-  const decoded = unwrapValue(message.value ?? message.content ?? message.payload ?? message);
-  return decoded || {};
-};
-
-const buildRecord = ({ message, partition }) => {
-  const parsed = normalizePayload(message);
-  const raw = parsed && typeof parsed === 'object' ? parsed : { message: parsed };
-  const body = { ...raw };
-  const receivedAt = new Date().toISOString();
-  const fp = body.fingerprint || fingerprint(body);
-  const id =
-    body.id ||
-    (typeof message.offset !== 'undefined' ? `${partition}-${message.offset}` : randomId());
-
-  return {
-    ...body,
-    fingerprint: fp || id,
-    id,
-    raw,
-    kafkaTopic: message.topic,
-    kafkaPartition: partition,
-    kafkaOffset: message.offset,
-    kafkaTimestamp: message.timestamp,
-    receivedAt,
-  };
-};
-
-const storeRecord = (record) => {
-  const key = record.fingerprint || record.id;
-  if (!key) {
-    return;
-  }
-
-  if (!recentMap.has(key)) {
-    recentOrder.push(key);
-    if (recentOrder.length > BUFFER_SIZE) {
-      const oldestKey = recentOrder.shift();
-      if (oldestKey) {
-        recentMap.delete(oldestKey);
-      }
-    }
-  }
-
-  recentMap.set(key, record);
-};
-
-const broadcast = (payload) => {
-  const data = JSON.stringify(payload);
-  for (const client of wss.clients) {
-    if (client.readyState === WebSocket.OPEN) {
-      client.send(data);
-    }
-  }
-};
-
-wss.on('connection', (socket) => {
-  const snapshot = buildSnapshot();
-
-  if (snapshot.length > 0) {
-    socket.send(JSON.stringify(snapshot));
-  }
-
-  socket.on('error', (error) => {
-    console.error('WebSocket error', error.message);
+// ----- Kafka consumer → 广播到所有 WS 客户端 -----
+(async () => {
+  const kafka = new Kafka({
+    clientId: process.env.KAFKA_CLIENT_ID || 'ws-bridge',
+    brokers: BROKERS,
   });
-});
 
-const start = async () => {
+  const consumer = kafka.consumer({
+    groupId: process.env.KAFKA_GROUP_ID || 'ws-bridge-group',
+  });
+
   await consumer.connect();
-  await consumer.subscribe({ topic: TOPIC, fromBeginning: FROM_BEGINNING });
+  console.log('Kafka connected ->', BROKERS.join(', '));
+
+  await consumer.subscribe({ topic: TOPIC, fromBeginning: false });
+  console.log(`Subscribed topic: ${TOPIC}`);
 
   await consumer.run({
-    eachMessage: async ({ message, partition }) => {
-      try {
-        const record = buildRecord({ message, partition });
-        storeRecord(record);
-        broadcast(record);
-      } catch (error) {
-        console.error('Failed to process Kafka message', error);
+    eachMessage: async ({ message }) => {
+      const payload = message.value ? message.value.toString() : '';
+      for (const ws of clients) {
+        try { ws.send(payload); } catch {}
       }
-    },
+    }
   });
-
-  server.listen(PORT, () => {
-    console.log(`Kafka WebSocket bridge listening on ${PORT}, streaming topic ${TOPIC}`);
-  });
-};
-
-start().catch((error) => {
-  console.error('Failed to start Kafka WebSocket bridge', error);
+})().catch(err => {
+  console.error('Kafka error:', err);
   process.exit(1);
 });
-
-const shutdown = async () => {
-  try {
-    await consumer.disconnect();
-  } catch (error) {
-    console.error('Error disconnecting Kafka consumer', error);
-  }
-  server.close(() => process.exit(0));
-};
-
-process.on('SIGINT', shutdown);
-process.on('SIGTERM', shutdown);
