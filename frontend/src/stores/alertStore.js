@@ -2,7 +2,17 @@ import { defineStore } from 'pinia';
 import { computed, ref } from 'vue';
 import { buildFingerprint } from '../utils/fingerprint';
 
-const DEFAULT_ENDPOINT = 'http://localhost:8080/api/clusters/local/topics/iot.alerts/messages';
+const RAW_ALERT_URL = (import.meta.env.VITE_ALERT_API_URL || '').trim();
+const DEFAULT_TOPIC = (import.meta.env.VITE_ALERT_TOPIC || 'iot.alerts').trim();
+const DEFAULT_CLUSTER = (import.meta.env.VITE_ALERT_CLUSTER || 'local').trim();
+const DEFAULT_HOST = (import.meta.env.VITE_ALERT_API_HOST || 'http://localhost:8080').trim();
+
+let DEFAULT_ENDPOINT = '';
+if (RAW_ALERT_URL) {
+  DEFAULT_ENDPOINT = RAW_ALERT_URL;
+} else if (DEFAULT_HOST) {
+  DEFAULT_ENDPOINT = `${DEFAULT_HOST.replace(/\/$/, '')}/api/clusters/${DEFAULT_CLUSTER}/topics/${DEFAULT_TOPIC}/messages`;
+}
 const DEFAULT_LIMIT = Number(import.meta.env.VITE_ALERT_FETCH_LIMIT || 200);
 const DEFAULT_METHOD = (import.meta.env.VITE_ALERT_FETCH_METHOD || 'POST').toUpperCase();
 
@@ -102,7 +112,7 @@ export const useAlertStore = defineStore('alertStream', () => {
   const loading = ref(false);
   const error = ref(null);
   const lastFetched = ref(null);
-  const endpoint = import.meta.env.VITE_ALERT_API_URL || DEFAULT_ENDPOINT;
+  const endpoint = DEFAULT_ENDPOINT;
 
   const alerts = computed(() =>
     Array.from(itemsMap.value.values()).sort((a, b) =>
@@ -118,6 +128,11 @@ export const useAlertStore = defineStore('alertStream', () => {
   };
 
   const fetchAlerts = async () => {
+    if (!endpoint) {
+      error.value = new Error('未配置 iot.alerts 拉取地址，已跳过初始化加载');
+      return;
+    }
+
     loading.value = true;
     error.value = null;
 
@@ -153,7 +168,11 @@ export const useAlertStore = defineStore('alertStream', () => {
       }
     } catch (err) {
       console.error('加载 iot.alerts 消息失败', err);
-      error.value = err;
+      if (err instanceof SyntaxError) {
+        error.value = new Error('i/o 响应不是合法 JSON，请确认 Kafka UI API 是否可访问');
+      } else {
+        error.value = err;
+      }
     } finally {
       loading.value = false;
     }

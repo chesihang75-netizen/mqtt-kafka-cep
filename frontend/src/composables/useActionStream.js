@@ -2,7 +2,11 @@ import { ref } from 'vue';
 
 const buildWsUrl = (baseUrl) => {
   try {
-    const url = new URL(baseUrl.replace(/^http/, 'ws'));
+    const normalized = baseUrl || '';
+    const wsBase = normalized.startsWith('http')
+      ? normalized.replace(/^http/, 'ws')
+      : `ws://${normalized.replace(/^ws?:\/\//, '')}`;
+    const url = new URL(wsBase);
     url.pathname = url.pathname.replace(/\/$/, '') + '/ws/actions';
     return url.toString();
   } catch (error) {
@@ -13,7 +17,11 @@ const buildWsUrl = (baseUrl) => {
 
 const buildRestUrl = (baseUrl) => {
   try {
-    const url = new URL(baseUrl);
+    const normalized = baseUrl || '';
+    const httpBase = normalized.startsWith('http')
+      ? normalized
+      : `http://${normalized.replace(/^ws?:\/\//, '')}`;
+    const url = new URL(httpBase);
     url.pathname = url.pathname.replace(/\/$/, '') + '/api/actions';
     return url.toString();
   } catch (error) {
@@ -29,7 +37,10 @@ export const useActionStream = () => {
   const reconnectAttempts = ref(0);
   let reconnectTimer = null;
 
-  const baseUrl = import.meta.env.VITE_ACTION_API_BASE_URL || 'http://localhost:8090';
+  const fallbackBaseUrl =
+    import.meta.env.VITE_ACTION_API_BASE_URL ||
+    (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:8090');
+  const baseUrl = fallbackBaseUrl || 'http://localhost:8090';
   const restUrl = buildRestUrl(baseUrl);
   const wsUrl = buildWsUrl(baseUrl);
 
@@ -51,9 +62,24 @@ export const useActionStream = () => {
   const fetchInitial = async () => {
     loading.value = true;
     try {
-      const response = await fetch(restUrl);
+      const response = await fetch(restUrl, {
+        headers: {
+          Accept: 'application/json, text/plain, */*',
+        },
+      });
       if (!response.ok) {
         throw new Error(`加载 Action 列表失败: ${response.status}`);
+      }
+      const contentType = response.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        const text = await response.text();
+        if (!text) {
+          loading.value = false;
+          return [];
+        }
+        throw new Error(
+          `Action API 返回非 JSON 响应（content-type: ${contentType || 'unknown'}）`
+        );
       }
       const payload = await response.json();
       loading.value = false;
