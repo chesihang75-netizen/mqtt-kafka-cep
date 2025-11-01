@@ -1,0 +1,18 @@
+:root {
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  color-scheme: light;
+  background-color: #f4f6fb;
+  color: #1b1d29;
+}
+
+body {
+  margin: 0;
+}
+
+a {
+  color: inherit;
+}
+
+* {
+  box-sizing: border-box;
+}
