@@ -8,11 +8,13 @@ import {
   summariseAlert,
 } from '../services/ruleEngine';
 import createSimulation from '../services/simulation';
+import createKafkaBridge from '../services/kafkaBridge';
 
 export default function useDashboard() {
   const actions = ref([]);
   const sensorSnapshot = reactive({});
   const roomStates = reactive({});
+  const connectionStatus = reactive({ alerts: false, sensors: false, simulation: false });
 
   ROOMS.forEach((roomId) => {
     sensorSnapshot[roomId] = createInitialSensorState(roomId);
@@ -20,6 +22,9 @@ export default function useDashboard() {
   });
 
   const pendingTimers = new Map();
+
+  const simulationPreference = (import.meta.env.VITE_ENABLE_SIMULATION || 'auto').toLowerCase();
+  let simulationActive = false;
 
   function handleAlertMessage(message) {
     const enriched = summariseAlert(message);
@@ -38,14 +43,22 @@ export default function useDashboard() {
     const target = sensorSnapshot[message.roomId];
     if (!target) return;
 
-    Object.assign(target, {
-      ...target,
-      co2: Math.round(message.co2),
-      temperature: Number(message.temperature.toFixed(1)),
-      motion: Boolean(message.motion),
-      lux: Math.round(message.lux),
-      updatedAt: message.timestamp,
-    });
+    if (Number.isFinite(message.co2)) {
+      target.co2 = Math.round(message.co2);
+    }
+    if (Number.isFinite(message.temperature)) {
+      target.temperature = Math.round(message.temperature * 10) / 10;
+    }
+    if (typeof message.motion === 'boolean') {
+      target.motion = message.motion;
+    } else if (message.motion != null) {
+      target.motion = Boolean(message.motion);
+    }
+    if (Number.isFinite(message.lux)) {
+      target.lux = Math.round(message.lux);
+    }
+
+    target.updatedAt = message.timestamp || new Date().toISOString();
 
     if (message.doorState) {
       roomStates[message.roomId].door = message.doorState;
@@ -81,13 +94,49 @@ export default function useDashboard() {
   }
 
   const simulation = createSimulation({ rules, onAlert: handleAlertMessage, onSensor: handleSensorMessage });
+  const kafkaBridge = createKafkaBridge({
+    onAlert: handleAlertMessage,
+    onSensor: handleSensorMessage,
+    onStatusChange: (key, connected) => {
+      connectionStatus[key] = connected;
+      if (simulationPreference === 'auto') {
+        if (connected) {
+          stopSimulation();
+        } else if (!connectionStatus.alerts && !connectionStatus.sensors) {
+          startSimulation();
+        }
+      }
+    },
+  });
+
+  function startSimulation() {
+    if (simulationActive || simulationPreference === 'never') return;
+    simulation.start();
+    simulationActive = true;
+    connectionStatus.simulation = true;
+  }
+
+  function stopSimulation() {
+    if (!simulationActive) return;
+    simulation.stop();
+    simulationActive = false;
+    connectionStatus.simulation = false;
+  }
 
   onMounted(() => {
-    simulation.start();
+    const bridgeConfigured = kafkaBridge.start();
+    if (simulationPreference === 'always') {
+      startSimulation();
+    } else if (simulationPreference === 'never') {
+      stopSimulation();
+    } else if (!bridgeConfigured) {
+      startSimulation();
+    }
   });
 
   onUnmounted(() => {
-    simulation.stop();
+    kafkaBridge.stop();
+    stopSimulation();
     pendingTimers.forEach((timer) => clearInterval(timer));
     pendingTimers.clear();
   });
@@ -96,5 +145,6 @@ export default function useDashboard() {
     actions,
     sensorSnapshot,
     roomStates,
+    connectionStatus,
   };
 }

@@ -5,6 +5,17 @@
       <p class="subtitle">
         Real-time overview of classroom automation rules, sensor telemetry, and device states.
       </p>
+      <div class="status-bar">
+        <span :class="['status-pill', connectionStatus.alerts ? 'status-pill--online' : 'status-pill--offline']">
+          Alerts stream: {{ connectionStatus.alerts ? 'connected' : 'waiting' }}
+        </span>
+        <span :class="['status-pill', connectionStatus.sensors ? 'status-pill--online' : 'status-pill--offline']">
+          Sensors stream: {{ connectionStatus.sensors ? 'connected' : 'waiting' }}
+        </span>
+        <span :class="['status-pill', connectionStatus.simulation ? 'status-pill--sim' : 'status-pill--standby']">
+          Simulator: {{ connectionStatus.simulation ? 'active' : 'standby' }}
+        </span>
+      </div>
     </header>
 
     <main class="app__content">
@@ -55,7 +66,7 @@ import RoomStatusPanel from './components/RoomStatusPanel.vue';
 import RuleCatalogue from './components/RuleCatalogue.vue';
 import useDashboard from './composables/useDashboard';
 
-const { actions, sensorSnapshot, roomStates } = useDashboard();
+const { actions, sensorSnapshot, roomStates, connectionStatus } = useDashboard();
 </script>
 
 <style scoped>
@@ -82,6 +93,45 @@ const { actions, sensorSnapshot, roomStates } = useDashboard();
   margin: 12px 0 0;
   font-size: 1rem;
   color: rgba(255, 255, 255, 0.85);
+}
+
+.status-bar {
+  margin-top: 18px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.status-pill {
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: rgba(255, 255, 255, 0.18);
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.status-pill--online {
+  background: rgba(17, 120, 70, 0.35);
+  border-color: rgba(53, 189, 126, 0.6);
+}
+
+.status-pill--offline {
+  background: rgba(176, 65, 54, 0.35);
+  border-color: rgba(232, 116, 105, 0.6);
+}
+
+.status-pill--sim {
+  background: rgba(62, 83, 197, 0.35);
+  border-color: rgba(120, 151, 255, 0.6);
+}
+
+.status-pill--standby {
+  background: rgba(130, 130, 130, 0.28);
+  border-color: rgba(200, 200, 200, 0.4);
 }
 
 .app__content {

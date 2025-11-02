@@ -15,6 +15,8 @@ the resulting changes applied to the classroom actuators.
 - Built-in simulator that produces realistic alerts and sensor readings when a live bridge to Kafka is not
   available. The simulator automatically applies the 15 rules requested in the specification, including the
   dimming behaviour for rule **R05** and temperature adjustments for rules **R11–R12**.
+- Optional Kafka bridge server that streams `iot.alerts` and `iot.input` topics to the browser over Server-Sent
+  Events (SSE). The UI automatically falls back to the simulator when the bridge is offline.
 
 ## Getting started
 
@@ -34,16 +36,41 @@ npm run build
 npm run preview -- --host 0.0.0.0 --port 5174
 ```
 
-## Integrating with live Kafka data
+## Streaming live Kafka topics into the UI
 
-The dashboard exposes two hook functions inside `src/composables/useDashboard.js`:
+Run the lightweight Node bridge to translate Kafka topics into browser-friendly SSE streams:
 
-- `handleSensorMessage(message)` expects payloads shaped like the JSON sent to `iot.input`.
-- `handleAlertMessage(message)` expects alert events that include `roomId`, `ruleId`, `ruleName`, `summary`, and a
-  `changes` object describing the actuator updates.
+```bash
+# From the frontend/ directory
+npm run kafka-bridge
+```
 
-To replace the built-in simulator with a real-time bridge, import your preferred Kafka consumer, call the handler
-functions with parsed messages, and remove the simulator initialisation inside the composable.
+Configuration is controlled by environment variables:
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `KAFKA_BROKERS` | `localhost:9092` | Comma-separated list of Kafka bootstrap servers. |
+| `KAFKA_ALERT_TOPIC` | `iot.alerts` | Topic consumed for automation actions. |
+| `KAFKA_SENSOR_TOPIC` | `iot.input` | Topic consumed for raw telemetry. |
+| `KAFKA_BRIDGE_PORT` | `5175` | HTTP port exposed by the bridge. |
+| `CORS_ORIGIN` | `*` | Optional comma-separated list of allowed origins for the SSE endpoints. |
+
+When the bridge is running, point the Vue app to it via `.env` or inline environment variables before starting Vite:
+
+```bash
+# Example .env.local
+VITE_KAFKA_BRIDGE_BASE_URL=http://localhost:5175
+# Optional: disable the simulator entirely instead of auto-fallback
+VITE_ENABLE_SIMULATION=never
+```
+
+Two additional overrides are available if the alerts and sensor streams live on different hosts:
+
+- `VITE_ALERTS_STREAM_URL`
+- `VITE_SENSORS_STREAM_URL`
+
+If no URLs are configured, or the bridge becomes unavailable, the dashboard falls back to the built-in simulator.
+Set `VITE_ENABLE_SIMULATION=always` to force the simulator on, or `never` to ensure only real Kafka data is used.
 
 ## File structure
 
@@ -65,7 +92,10 @@ frontend/
 │   └── services/
 │       ├── ruleEngine.js
 │       ├── rules.js
+│       ├── kafkaBridge.js
 │       └── simulation.js
+├── server/
+│   └── kafkaBridgeServer.js
 └── vite.config.js
 ```
 
