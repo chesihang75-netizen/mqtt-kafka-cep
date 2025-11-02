@@ -49,6 +49,41 @@ function normaliseAlert(payload) {
 
   const rule = ruleMap.get(ruleId);
 
+  const triggeredAt = parseTimestamp(payload.ts ?? payload.triggeredAt ?? payload.timestamp);
+
+  const telemetry = {};
+  const temperature = toNumber(payload.temp ?? payload.temperature ?? payload.max_temp);
+  if (Number.isFinite(temperature)) {
+    telemetry.temperature = temperature;
+  }
+
+  const co2 =
+    toNumber(payload.co2 ?? payload.max_co2 ?? payload.maxCo2 ?? payload.CO2 ?? payload.co2_max) ??
+    undefined;
+  if (Number.isFinite(co2)) {
+    telemetry.co2 = co2;
+  }
+
+  const motion = toBoolean(payload.motion ?? payload.motion_active ?? payload.motionActive);
+  if (typeof motion === 'boolean') {
+    telemetry.motion = motion;
+  }
+
+  const lux = toNumber(payload.lux ?? payload.light ?? payload.lightLevel);
+  if (Number.isFinite(lux)) {
+    telemetry.lux = lux;
+  }
+
+  if (payload.doorState || payload.door_state) {
+    const doorState = (payload.doorState || payload.door_state).toString().toUpperCase();
+    telemetry.doorState = doorState;
+  }
+
+  const rise = toNumber(payload.rise ?? payload.tempRise ?? payload.temperatureRise);
+  if (Number.isFinite(rise)) {
+    telemetry.temperatureRise = rise;
+  }
+
   let changes;
   if (payload.changes && typeof payload.changes === 'object' && !Array.isArray(payload.changes)) {
     changes = { ...payload.changes };
@@ -85,8 +120,9 @@ function normaliseAlert(payload) {
     ruleId,
     ruleName: payload.ruleName || rule?.category,
     summary: payload.msg || payload.summary || rule?.description,
-    triggeredAt: parseTimestamp(payload.ts ?? payload.triggeredAt ?? payload.timestamp),
+    triggeredAt,
     changes,
+    telemetry: Object.keys(telemetry).length ? telemetry : undefined,
   };
 }
 

@@ -37,6 +37,8 @@ export default function useDashboard() {
         scheduleLightLevelRamp(state.roomId, message.changes.dimTo, message.changes.dimDuration ?? 30);
       }
     }
+
+    mergeAlertTelemetry(message, enriched.triggeredAt);
   }
 
   function handleSensorMessage(message) {
@@ -59,10 +61,54 @@ export default function useDashboard() {
     }
 
     target.updatedAt = message.timestamp || new Date().toISOString();
+    target.source = 'sensor';
+    target.lastRule = undefined;
 
     if (message.doorState) {
-      roomStates[message.roomId].door = message.doorState;
+      roomStates[message.roomId].door = normaliseDoorState(message.doorState);
     }
+  }
+
+  function mergeAlertTelemetry(message, triggeredAt) {
+    if (!message?.telemetry) return;
+    const target = sensorSnapshot[message.roomId];
+    if (!target) return;
+
+    const incomingTs = triggeredAt ? new Date(triggeredAt).getTime() : Date.now();
+    const currentTs = target.updatedAt ? new Date(target.updatedAt).getTime() : 0;
+    if (Number.isFinite(currentTs) && currentTs > incomingTs) {
+      return;
+    }
+
+    const { telemetry } = message;
+
+    if (Number.isFinite(telemetry.co2)) {
+      target.co2 = Math.round(telemetry.co2);
+    }
+    if (Number.isFinite(telemetry.temperature)) {
+      target.temperature = Math.round(telemetry.temperature * 10) / 10;
+    }
+    if (typeof telemetry.motion === 'boolean') {
+      target.motion = telemetry.motion;
+    }
+    if (Number.isFinite(telemetry.lux)) {
+      target.lux = Math.round(telemetry.lux);
+    }
+
+    target.updatedAt = triggeredAt || new Date().toISOString();
+    target.source = 'alert';
+    target.lastRule = message.ruleId;
+
+    if (telemetry.doorState) {
+      roomStates[message.roomId].door = normaliseDoorState(telemetry.doorState);
+    }
+  }
+
+  function normaliseDoorState(value) {
+    if (typeof value === 'string') {
+      return value.toUpperCase();
+    }
+    return value;
   }
 
   function scheduleLightLevelRamp(roomId, targetLevel, durationSeconds) {

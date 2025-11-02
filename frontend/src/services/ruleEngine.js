@@ -23,6 +23,8 @@ export function createInitialSensorState(roomId) {
     motion: false,
     lux: 320,
     updatedAt: null,
+    source: 'simulation',
+    lastRule: undefined,
   };
 }
 

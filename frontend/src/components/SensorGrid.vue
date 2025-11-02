@@ -17,7 +17,7 @@
         <td :data-label="'Temp'" :class="temperatureClass(room.temperature)">{{ room.temperature }}</td>
         <td data-label="Motion" :class="{ active: room.motion }">{{ room.motion ? 'Detected' : 'Idle' }}</td>
         <td data-label="Lux">{{ room.lux }}</td>
-        <td data-label="Updated">{{ formatRelative(room.updatedAt) }}</td>
+        <td data-label="Updated">{{ formatUpdated(room) }}</td>
       </tr>
     </tbody>
   </table>
@@ -45,6 +45,25 @@ function formatRelative(timestamp) {
   if (seconds < 60) return `${seconds}s ago`;
   const minutes = Math.round(seconds / 60);
   return `${minutes}m ago`;
+}
+
+function formatUpdated(room) {
+  const relative = formatRelative(room.updatedAt);
+  if (relative === '—') return relative;
+
+  if (room.source === 'alert') {
+    return `${relative} · Alert${room.lastRule ? ` (${room.lastRule})` : ''}`;
+  }
+
+  if (room.source === 'sensor') {
+    return `${relative} · Telemetry`;
+  }
+
+  if (room.source === 'simulation') {
+    return `${relative} · Simulation`;
+  }
+
+  return relative;
 }
 
 function co2Class(value) {

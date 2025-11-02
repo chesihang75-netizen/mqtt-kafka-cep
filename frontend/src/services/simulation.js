@@ -58,6 +58,7 @@ export default function createSimulation({ rules, onAlert, onSensor }) {
     const rule = pick(rules);
     const roomId = rule.room;
     const now = new Date();
+    const sensor = sensorState.get(roomId);
     const message = {
       roomId,
       ruleId: rule.id,
@@ -72,7 +73,6 @@ export default function createSimulation({ rules, onAlert, onSensor }) {
       message.changes.lights = 'OFF';
       message.changes.hvac = 'ECO';
       doorState[roomId] = 'CLOSED';
-      const sensor = sensorState.get(roomId);
       if (sensor) {
         sensor.motion = false;
         sensor.lux = Math.max(10, sensor.lux - 60);
@@ -84,10 +84,19 @@ export default function createSimulation({ rules, onAlert, onSensor }) {
     }
 
     if (message.changes?.hvac === 'BOOST') {
-      const sensor = sensorState.get(roomId);
       if (sensor) {
         sensor.co2 = Math.max(450, sensor.co2 - 80);
       }
+    }
+
+    if (sensor) {
+      message.telemetry = {
+        co2: sensor.co2,
+        temperature: sensor.temperature,
+        motion: sensor.motion,
+        lux: sensor.lux,
+        doorState: doorState[roomId],
+      };
     }
 
     onAlert(message);
