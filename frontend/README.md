@@ -13,8 +13,10 @@ the resulting changes applied to the classroom actuators.
 - Room status overview that keeps lights, door state, HVAC mode, and setpoint in sync with the most recent
   automation action.
 - Built-in simulator that produces realistic alerts and sensor readings when a live bridge to Kafka is not
-  available. The simulator automatically applies the 15 rules requested in the specification, including the
-  dimming behaviour for rule **R05** and temperature adjustments for rules **R11–R12**.
+  available. The simulator evaluates the same 15 automation rules end-to-end so the `iot.input` telemetry that
+  triggers an alert is always mirrored in the resulting `iot.alerts` message. After-hours rules honour the real
+  clock (no 18:00 triggers at 16:00), while **R05** still ramps the lights down and temperature rules adjust
+  setpoints as specified.
 - Optional Kafka bridge server that streams `iot.alerts` and `iot.input` topics to the browser over Server-Sent
   Events (SSE). The UI automatically falls back to the simulator when the bridge is offline.
 
@@ -71,6 +73,9 @@ Two additional overrides are available if the alerts and sensor streams live on 
 
 If no URLs are configured, or the bridge becomes unavailable, the dashboard falls back to the built-in simulator.
 Set `VITE_ENABLE_SIMULATION=always` to force the simulator on, or `never` to ensure only real Kafka data is used.
+Use `VITE_SIM_TIME_SCALE` (default `1`) to speed up the simulator clock when you want to test long-duration rules
+such as the 10-minute no-motion checks—e.g. `VITE_SIM_TIME_SCALE=6` makes one real minute behave like six simulated
+minutes while still respecting the 18:00 cut-off for after-hours automation.
 
 ## File structure
 
