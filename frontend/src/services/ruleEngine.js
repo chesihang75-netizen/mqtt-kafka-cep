@@ -22,6 +22,7 @@ export function createInitialSensorState(roomId) {
     temperature: 23,
     motion: false,
     lux: 320,
+    deviceId: undefined,
     updatedAt: null,
     source: 'simulation',
     lastRule: undefined,

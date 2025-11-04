@@ -13,10 +13,10 @@
     <tbody>
       <tr v-for="room in orderedRooms" :key="room.roomId">
         <td data-label="Room">{{ room.roomId }}</td>
-        <td :data-label="'CO₂'" :class="co2Class(room.co2)">{{ room.co2 }}</td>
-        <td :data-label="'Temp'" :class="temperatureClass(room.temperature)">{{ room.temperature }}</td>
-        <td data-label="Motion" :class="{ active: room.motion }">{{ room.motion ? 'Detected' : 'Idle' }}</td>
-        <td data-label="Lux">{{ room.lux }}</td>
+        <td :data-label="'CO₂'" :class="co2Class(room.co2)">{{ formatNumber(room.co2) }}</td>
+        <td :data-label="'Temp'" :class="temperatureClass(room.temperature)">{{ formatTemperature(room.temperature) }}</td>
+        <td data-label="Motion" :class="{ active: room.motion === true }">{{ formatMotion(room.motion) }}</td>
+        <td data-label="Lux">{{ formatNumber(room.lux) }}</td>
         <td data-label="Updated">{{ formatUpdated(room) }}</td>
       </tr>
     </tbody>
@@ -51,12 +51,8 @@ function formatUpdated(room) {
   const relative = formatRelative(room.updatedAt);
   if (relative === '—') return relative;
 
-  if (room.source === 'alert') {
-    return `${relative} · Alert${room.lastRule ? ` (${room.lastRule})` : ''}`;
-  }
-
   if (room.source === 'sensor') {
-    return `${relative} · Telemetry`;
+    return `${relative} · Telemetry${room.lastRule ? ` · ${room.lastRule}` : ''}`;
   }
 
   if (room.source === 'simulation') {
@@ -66,13 +62,35 @@ function formatUpdated(room) {
   return relative;
 }
 
+function formatNumber(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return Math.round(value);
+  }
+  return '—';
+}
+
+function formatTemperature(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return Math.round(value * 10) / 10;
+  }
+  return '—';
+}
+
+function formatMotion(value) {
+  if (value === true) return 'Detected';
+  if (value === false) return 'Idle';
+  return '—';
+}
+
 function co2Class(value) {
+  if (!Number.isFinite(value)) return '';
   if (value >= 1000) return 'warn';
   if (value >= 900) return 'caution';
   return '';
 }
 
 function temperatureClass(value) {
+  if (!Number.isFinite(value)) return '';
   if (value >= 27 || value <= 19) return 'warn';
   if (value >= 25 || value <= 20) return 'caution';
   return '';

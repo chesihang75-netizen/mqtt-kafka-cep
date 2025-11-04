@@ -7,7 +7,7 @@ the Siddhi pipeline in this repository.
 ## Features
 
 - Action feed that renders messages produced on the `iot.alerts` topic. Each message shows the room, rule, and
-the resulting changes applied to the classroom actuators.
+  the resulting changes applied to the classroom actuators.
 - Sensor telemetry grid that surfaces CO₂, temperature, motion, and lux readings for classrooms **CR-101** through
   **CR-105** based on `iot.input` messages.
 - Room status overview that keeps lights, door state, HVAC mode, and setpoint in sync with the most recent
@@ -19,6 +19,19 @@ the resulting changes applied to the classroom actuators.
   setpoints as specified.
 - Optional Kafka bridge server that streams `iot.alerts` and `iot.input` topics to the browser over Server-Sent
   Events (SSE). The UI automatically falls back to the simulator when the bridge is offline.
+
+## System flow
+
+1. Devices publish raw telemetry (room ID, device ID, timestamp, `temp`, `co2`, `motion`, optional `lux`) to the
+   Kafka topic **`iot.input`**.
+2. Siddhi consumes `iot.input`, evaluates the automation rules, and emits alerts to **`iot.alerts`** with the
+   schema defined in [`siddhi-apps/KafkaIotPipeline.siddhi`](../siddhi-apps/KafkaIotPipeline.siddhi):
+   `rule`, `roomId`, `action`, `temp`, `rise`, `msg`, `ts`.
+3. The Node-based Kafka bridge (optional) fans out both topics over SSE endpoints (`/stream/input` and
+   `/stream/alerts`).
+4. The Vue dashboard ingests the SSE streams. Sensor panels are populated exclusively from live `iot.input`
+   messages, while the action list and room status cards reflect `iot.alerts` events. When the bridge is disabled,
+   the simulator publishes synthetic telemetry to both topics so the UI behaviour stays consistent.
 
 ## Getting started
 

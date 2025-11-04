@@ -48,6 +48,7 @@ function normaliseAlert(payload) {
   if (!roomId || !ruleId) return null;
 
   const rule = ruleMap.get(ruleId);
+  const action = payload.action || payload.action_type;
 
   const triggeredAt = parseTimestamp(payload.ts ?? payload.triggeredAt ?? payload.timestamp);
 
@@ -57,58 +58,45 @@ function normaliseAlert(payload) {
     telemetry.temperature = temperature;
   }
 
-  const co2 =
-    toNumber(payload.co2 ?? payload.max_co2 ?? payload.maxCo2 ?? payload.CO2 ?? payload.co2_max) ??
-    undefined;
-  if (Number.isFinite(co2)) {
-    telemetry.co2 = co2;
+  const temperatureRise = toNumber(payload.rise ?? payload.tempRise ?? payload.temperatureRise);
+  if (Number.isFinite(temperatureRise)) {
+    telemetry.temperatureRise = temperatureRise;
   }
 
-  const motion = toBoolean(payload.motion ?? payload.motion_active ?? payload.motionActive);
-  if (typeof motion === 'boolean') {
-    telemetry.motion = motion;
-  }
-
-  const lux = toNumber(payload.lux ?? payload.light ?? payload.lightLevel);
-  if (Number.isFinite(lux)) {
-    telemetry.lux = lux;
-  }
-
-  if (payload.doorState || payload.door_state) {
-    const doorState = (payload.doorState || payload.door_state).toString().toUpperCase();
-    telemetry.doorState = doorState;
-  }
-
-  const rise = toNumber(payload.rise ?? payload.tempRise ?? payload.temperatureRise);
-  if (Number.isFinite(rise)) {
-    telemetry.temperatureRise = rise;
-  }
-
-  let changes;
+  let changes = rule?.changes ? { ...rule.changes } : undefined;
   if (payload.changes && typeof payload.changes === 'object' && !Array.isArray(payload.changes)) {
-    changes = { ...payload.changes };
-  } else if (rule?.changes) {
-    changes = { ...rule.changes };
-  } else {
-    changes = undefined;
+    changes = { ...(changes || {}), ...payload.changes };
   }
 
-  if (payload.action) {
-    switch (payload.action) {
+  if (action) {
+    switch (action) {
       case 'HVAC_BOOST':
-        changes = { ...(changes || {}), hvac: 'BOOST' };
+        changes = { ...(changes || {}), hvac: changes?.hvac || 'BOOST' };
         break;
       case 'SETPOINT_DEC':
-        changes = { ...(changes || {}), setpointDelta: -1 };
+        changes = {
+          ...(changes || {}),
+          setpointDelta: changes?.setpointDelta ?? -1,
+        };
         break;
       case 'SETPOINT_INC':
-        changes = { ...(changes || {}), setpointDelta: 1 };
+        changes = {
+          ...(changes || {}),
+          setpointDelta: changes?.setpointDelta ?? 1,
+        };
         break;
       case 'BOOST_ALERT':
-        changes = { ...(changes || {}), hvac: 'BOOST', alert: changes?.alert || 'stuffy room' };
+        changes = {
+          ...(changes || {}),
+          hvac: changes?.hvac || 'BOOST',
+          alert: changes?.alert || 'stuffy room',
+        };
         break;
       case 'ALERT_HVAC_CHECK':
-        changes = { ...(changes || {}), alert: changes?.alert || 'HVAC check' };
+        changes = {
+          ...(changes || {}),
+          alert: changes?.alert || 'HVAC check',
+        };
         break;
       default:
         break;
@@ -121,6 +109,7 @@ function normaliseAlert(payload) {
     ruleName: payload.ruleName || rule?.category,
     summary: payload.msg || payload.summary || rule?.description,
     triggeredAt,
+    action,
     changes,
     telemetry: Object.keys(telemetry).length ? telemetry : undefined,
   };
@@ -132,9 +121,7 @@ function normaliseSensor(payload) {
   if (!roomId) return null;
 
   const temperature = toNumber(payload.temp) ?? toNumber(payload.temperature);
-
   const co2 = toNumber(payload.co2) ?? toNumber(payload.CO2);
-
   const motion = toBoolean(payload.motion ?? payload.motion_active ?? payload.motionActive);
 
   let lux;
@@ -150,6 +137,7 @@ function normaliseSensor(payload) {
 
   return {
     roomId,
+    deviceId: payload.deviceId || payload.device_id,
     temperature,
     co2,
     motion,

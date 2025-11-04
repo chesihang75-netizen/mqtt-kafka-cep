@@ -38,7 +38,10 @@ export default function useDashboard() {
       }
     }
 
-    mergeAlertTelemetry(message, enriched.triggeredAt);
+    const sensor = sensorSnapshot[message.roomId];
+    if (sensor) {
+      sensor.lastRule = message.ruleId;
+    }
   }
 
   function handleSensorMessage(message) {
@@ -47,17 +50,29 @@ export default function useDashboard() {
 
     if (Number.isFinite(message.co2)) {
       target.co2 = Math.round(message.co2);
+    } else if (message.co2 == null) {
+      target.co2 = undefined;
     }
     if (Number.isFinite(message.temperature)) {
       target.temperature = Math.round(message.temperature * 10) / 10;
+    } else if (message.temperature == null) {
+      target.temperature = undefined;
     }
     if (typeof message.motion === 'boolean') {
       target.motion = message.motion;
-    } else if (message.motion != null) {
+    } else if (message.motion == null) {
+      target.motion = undefined;
+    } else {
       target.motion = Boolean(message.motion);
     }
     if (Number.isFinite(message.lux)) {
       target.lux = Math.round(message.lux);
+    } else if (message.lux == null) {
+      target.lux = undefined;
+    }
+
+    if (message.deviceId) {
+      target.deviceId = message.deviceId;
     }
 
     target.updatedAt = message.timestamp || new Date().toISOString();
@@ -66,41 +81,6 @@ export default function useDashboard() {
 
     if (message.doorState) {
       roomStates[message.roomId].door = normaliseDoorState(message.doorState);
-    }
-  }
-
-  function mergeAlertTelemetry(message, triggeredAt) {
-    if (!message?.telemetry) return;
-    const target = sensorSnapshot[message.roomId];
-    if (!target) return;
-
-    const incomingTs = triggeredAt ? new Date(triggeredAt).getTime() : Date.now();
-    const currentTs = target.updatedAt ? new Date(target.updatedAt).getTime() : 0;
-    if (Number.isFinite(currentTs) && currentTs > incomingTs) {
-      return;
-    }
-
-    const { telemetry } = message;
-
-    if (Number.isFinite(telemetry.co2)) {
-      target.co2 = Math.round(telemetry.co2);
-    }
-    if (Number.isFinite(telemetry.temperature)) {
-      target.temperature = Math.round(telemetry.temperature * 10) / 10;
-    }
-    if (typeof telemetry.motion === 'boolean') {
-      target.motion = telemetry.motion;
-    }
-    if (Number.isFinite(telemetry.lux)) {
-      target.lux = Math.round(telemetry.lux);
-    }
-
-    target.updatedAt = triggeredAt || new Date().toISOString();
-    target.source = 'alert';
-    target.lastRule = message.ruleId;
-
-    if (telemetry.doorState) {
-      roomStates[message.roomId].door = normaliseDoorState(telemetry.doorState);
     }
   }
 
