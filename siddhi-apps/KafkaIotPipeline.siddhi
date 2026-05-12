@@ -11,12 +11,15 @@
   @map(type='json', fail.on.missing.attribute='false')
 )
 define stream IotInStream (
+  buildingId string,
   roomId string,
   deviceId string,
   ts long,
   temp double,
   motion bool,
-  co2 long
+  co2 long,
+  lux long,
+  doorOpen bool
 );
 
 /* --------- OUTPUT: Kafka -> iot.alerts (JSON) --------- */
@@ -27,95 +30,2926 @@ define stream IotInStream (
   @map(type='json')
 )
 define stream Alerts (
-  rule string,
+  ruleId string,
+  buildingId string,
   roomId string,
   action string,
   temp double,
+  co2 long,
   rise double,
   msg string,
   ts long
 );
 
-/* ================= Rules ================= */
+/* --------- Internal aggregation stream --------- */
+define stream RuleAgg (
+  ruleId string,
+  buildingId string,
+  roomId string,
+  action string,
+  temp double,
+  co2 long,
+  rise double,
+  msg string,
+  ts long,
+  minTemp double,
+  maxTemp double,
+  minCo2 long,
+  maxCo2 long,
+  minLux long,
+  maxLux long
+);
 
-/* R11: CR-101 temp > 26 for 10m AND motion => setpoint -1 (min 22) */
+/* ================= ORIGINAL 60 RULES WITH SECONDS WINDOWS ================= */
+
+/* ================= CR-101 rules ================= */
+/* CR101_R01: after 18:00 + no motion 10s + door closed -> lights off + HVAC eco */
+from IotInStream[roomId == 'CR-101' and motion == false and doorOpen == false]
+#window.time(10 sec)
+select
+  'CR101_R01' as ruleId,
+  buildingId,
+  roomId,
+  'LIGHTS_OFF_HVAC_ECO' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'After 18:00, no motion for 10s and door closed: lights off + HVAC eco mode' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR101_R01' and (ts % 86400000L) >= 64800000L]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR101_R02: motion + CO2 > 1000ppm for 5s -> HVAC boost */
 from IotInStream[roomId == 'CR-101' and motion == true]
-#window.time(10 min)
+#window.time(5 sec)
 select
-  'R11' as rule,
-  roomId,
-  'SETPOINT_DEC' as action,
-  max(temp) as temp,
-  (max(temp) - min(temp)) as rise,
-  'Temp > 26 for 10m with motion: decrease setpoint by 1C (min 22C)' as msg,
-  max(ts) as ts
-having min(temp) > 26.0
-insert into Alerts;
-
-/* R12: CR-102 temp < 20 for 10m AND motion => setpoint +1 (max 24) */
-from IotInStream[roomId == 'CR-102' and motion == true]
-#window.time(10 min)
-select
-  'R12' as rule,
-  roomId,
-  'SETPOINT_INC' as action,
-  max(temp) as temp,
-  (max(temp) - min(temp)) as rise,
-  'Temp < 20 for 10m with motion: increase setpoint by 1C (max 24C)' as msg,
-  max(ts) as ts
-having max(temp) < 20.0
-insert into Alerts;
-
-/* R13: CR-103 temp > 27 for 5m AND motion => HVAC BOOST */
-from IotInStream[roomId == 'CR-103' and motion == true]
-#window.time(5 min)
-select
-  'R13' as rule,
+  'CR101_R02' as ruleId,
+  buildingId,
   roomId,
   'HVAC_BOOST' as action,
   max(temp) as temp,
-  (max(temp) - min(temp)) as rise,
-  'Temp > 27 for 5m with motion: HVAC BOOST' as msg,
-  max(ts) as ts
-having min(temp) > 27.0
+  max(co2) as co2,
+  0.0 as rise,
+  'Motion and CO2 > 1000ppm for 5s: HVAC boost' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR101_R02' and minCo2 > 1000L]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
 insert into Alerts;
 
-/* R14: CR-104 temp rising > 2C in 10m AND motion => alert HVAC check */
-from IotInStream[roomId == 'CR-104' and motion == true]
-#window.time(10 min)
+/* CR101_R03: motion + temp > 26C for 10s -> setpoint -1C */
+from IotInStream[roomId == 'CR-101' and motion == true]
+#window.time(10 sec)
 select
-  'R14' as rule,
+  'CR101_R03' as ruleId,
+  buildingId,
   roomId,
-  'ALERT_HVAC_CHECK' as action,
+  'SETPOINT_DEC' as action,
   max(temp) as temp,
+  max(co2) as co2,
   (max(temp) - min(temp)) as rise,
-  'Temp rising > 2C in 10m with motion: HVAC check' as msg,
-  max(ts) as ts
-having (max(temp) - min(temp)) > 2.0
+  'Motion and temp > 26C for 10s: decrease setpoint by 1C' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR101_R03' and minTemp > 26.0]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
 insert into Alerts;
 
-/* R15 (分两步：先聚合到中间流 R15Agg，再从中间流过滤入 Alerts)
-   不显式 define 中间流，避免额外的 'define' 关键字引起解析歧义  */
-
-/* Step 1: 聚合（含 max CO2）→ 中间流 R15Agg */
-from IotInStream[roomId == 'CR-105']
-#window.time(15 min)
+/* CR101_R04: motion + lux < 200 for 5s -> LIGHTS_ON_80 */
+from IotInStream[roomId == 'CR-101' and motion == true]
+#window.time(5 sec)
 select
+  'CR101_R04' as ruleId,
+  buildingId,
   roomId,
+  'LIGHTS_ON_80' as action,
   max(temp) as temp,
-  (max(temp) - min(temp)) as rise,
-  max(co2) as max_co2,
-  max(ts) as ts
-insert into R15Agg;
+  max(co2) as co2,
+  0.0 as rise,
+  'Motion and lux < 200 for 5s: lights on' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
 
-/* Step 2: 从中间流过滤到 Alerts（Alerts 无 co2 字段，不再在 HAVING 中使用 co2） */
-from R15Agg[(temp > 25.0) and (max_co2 > 1000)]
+from RuleAgg[ruleId == 'CR101_R04' and maxLux < 200L]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR101_R05: door open + no motion 25s -> close door */
+from IotInStream[roomId == 'CR-101' and doorOpen == true and motion == false]
+#window.time(25 sec)
 select
-  'R15' as rule,
+  'CR101_R05' as ruleId,
+  buildingId,
   roomId,
-  'BOOST_ALERT' as action,
+  'DOOR_CLOSE' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'Door open and no motion for 25s: close door' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR101_R05']
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR101_R06: door open + motion + after 22:00 -> security alert */
+from IotInStream[roomId == 'CR-101' and doorOpen == true and motion == true]
+select
+  'CR101_R06' as ruleId,
+  buildingId,
+  roomId,
+  'SECURITY_ALERT' as action,
   temp,
-  rise,
-  'Temp > 25 for 15m and CO2 > 1000: BOOST + alert stuffy room' as msg,
+  co2,
+  0.0 as rise,
+  'Door opened with motion after 22:00: security alert' as msg,
+  ts
+having (ts % 86400000L) >= 79200000L
+insert into Alerts;
+/* CR101_R07: door closed + no motion 30s -> lights off */
+from IotInStream[roomId == 'CR-101' and doorOpen == false and motion == false]
+#window.time(30 sec)
+select
+  'CR101_R07' as ruleId,
+  buildingId,
+  roomId,
+  'LIGHTS_OFF' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'Door closed and no motion for 30s: lights off' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR101_R07']
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR101_R08: motion + CO2 > 1000 + temp > 25 -> HVAC boost */
+from IotInStream[roomId == 'CR-101' and motion == true and co2 > 1000L and temp > 25.0]
+select
+  'CR101_R08' as ruleId,
+  buildingId,
+  roomId,
+  'HVAC_BOOST' as action,
+  temp,
+  co2,
+  0.0 as rise,
+  'Motion, CO2 > 1000ppm and temp > 25C: HVAC boost' as msg,
   ts
 insert into Alerts;
+/* CR101_R09: motion + temp < 22C for 5s -> setpoint +1C */
+from IotInStream[roomId == 'CR-101' and motion == true]
+#window.time(5 sec)
+select
+  'CR101_R09' as ruleId,
+  buildingId,
+  roomId,
+  'SETPOINT_INC' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  (max(temp) - min(temp)) as rise,
+  'Motion and temp < 22C for 5s: increase setpoint by 1C' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR101_R09' and maxTemp < 22.0]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR101_R10: motion + lux > 700 for 5s -> LIGHTS_DIM_60 */
+from IotInStream[roomId == 'CR-101' and motion == true]
+#window.time(5 sec)
+select
+  'CR101_R10' as ruleId,
+  buildingId,
+  roomId,
+  'LIGHTS_DIM_60' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'Motion and lux > 700 for 5s: dim lights' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR101_R10' and minLux > 700L and maxLux <= 1000L]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR101_R11: motion + lux > 1000 for 5s -> LIGHTS_DIM_40 */
+from IotInStream[roomId == 'CR-101' and motion == true]
+#window.time(5 sec)
+select
+  'CR101_R11' as ruleId,
+  buildingId,
+  roomId,
+  'LIGHTS_DIM_40' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'Motion and lux > 1000 for 5s: dim lights' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR101_R11' and minLux > 1000L]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR101_R12: motion + lux < 100 for 5s -> lights on 100% */
+from IotInStream[roomId == 'CR-101' and motion == true]
+#window.time(5 sec)
+select
+  'CR101_R12' as ruleId,
+  buildingId,
+  roomId,
+  'LIGHTS_ON_100' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'Motion and lux < 100 for 5s: lights on 100%' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR101_R12' and maxLux < 100L]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+
+/* ================= CR-102 rules ================= */
+/* CR102_R01: after 18:00 + no motion 10s + door closed -> lights off + HVAC eco */
+from IotInStream[roomId == 'CR-102' and motion == false and doorOpen == false]
+#window.time(10 sec)
+select
+  'CR102_R01' as ruleId,
+  buildingId,
+  roomId,
+  'LIGHTS_OFF_HVAC_ECO' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'After 18:00, no motion for 10s and door closed: lights off + HVAC eco mode' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR102_R01' and (ts % 86400000L) >= 64800000L]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR102_R02: motion + CO2 > 950ppm for 5s -> HVAC boost */
+from IotInStream[roomId == 'CR-102' and motion == true]
+#window.time(5 sec)
+select
+  'CR102_R02' as ruleId,
+  buildingId,
+  roomId,
+  'HVAC_BOOST' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'Motion and CO2 > 950ppm for 5s: HVAC boost' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR102_R02' and minCo2 > 950L]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR102_R03: motion + temp > 28C for 10s -> setpoint -1C */
+from IotInStream[roomId == 'CR-102' and motion == true]
+#window.time(10 sec)
+select
+  'CR102_R03' as ruleId,
+  buildingId,
+  roomId,
+  'SETPOINT_DEC' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  (max(temp) - min(temp)) as rise,
+  'Motion and temp > 28C for 10s: decrease setpoint by 1C' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR102_R03' and minTemp > 28.0]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR102_R04: motion + lux < 250 for 5s -> LIGHTS_ON_70 */
+from IotInStream[roomId == 'CR-102' and motion == true]
+#window.time(5 sec)
+select
+  'CR102_R04' as ruleId,
+  buildingId,
+  roomId,
+  'LIGHTS_ON_70' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'Motion and lux < 250 for 5s: lights on' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR102_R04' and maxLux < 250L]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR102_R05: door open + no motion 15s -> close door */
+from IotInStream[roomId == 'CR-102' and doorOpen == true and motion == false]
+#window.time(15 sec)
+select
+  'CR102_R05' as ruleId,
+  buildingId,
+  roomId,
+  'DOOR_CLOSE' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'Door open and no motion for 15s: close door' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR102_R05']
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR102_R06: door open + motion + after 22:00 -> security alert */
+from IotInStream[roomId == 'CR-102' and doorOpen == true and motion == true]
+select
+  'CR102_R06' as ruleId,
+  buildingId,
+  roomId,
+  'SECURITY_ALERT' as action,
+  temp,
+  co2,
+  0.0 as rise,
+  'Door opened with motion after 22:00: security alert' as msg,
+  ts
+having (ts % 86400000L) >= 79200000L
+insert into Alerts;
+/* CR102_R07: door closed + no motion 30s -> lights off */
+from IotInStream[roomId == 'CR-102' and doorOpen == false and motion == false]
+#window.time(30 sec)
+select
+  'CR102_R07' as ruleId,
+  buildingId,
+  roomId,
+  'LIGHTS_OFF' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'Door closed and no motion for 30s: lights off' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR102_R07']
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR102_R08: motion + CO2 > 950 + temp > 26 -> HVAC boost */
+from IotInStream[roomId == 'CR-102' and motion == true and co2 > 950L and temp > 26.0]
+select
+  'CR102_R08' as ruleId,
+  buildingId,
+  roomId,
+  'HVAC_BOOST' as action,
+  temp,
+  co2,
+  0.0 as rise,
+  'Motion, CO2 > 950ppm and temp > 26C: HVAC boost' as msg,
+  ts
+insert into Alerts;
+/* CR102_R09: motion + temp < 20C for 5s -> setpoint +1C */
+from IotInStream[roomId == 'CR-102' and motion == true]
+#window.time(5 sec)
+select
+  'CR102_R09' as ruleId,
+  buildingId,
+  roomId,
+  'SETPOINT_INC' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  (max(temp) - min(temp)) as rise,
+  'Motion and temp < 20C for 5s: increase setpoint by 1C' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR102_R09' and maxTemp < 20.0]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR102_R10: motion + lux > 600 for 5s -> LIGHTS_DIM_50 */
+from IotInStream[roomId == 'CR-102' and motion == true]
+#window.time(5 sec)
+select
+  'CR102_R10' as ruleId,
+  buildingId,
+  roomId,
+  'LIGHTS_DIM_50' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'Motion and lux > 600 for 5s: dim lights' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR102_R10' and minLux > 600L and maxLux <= 1000L]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR102_R11: motion + lux > 1000 for 5s -> LIGHTS_DIM_40 */
+from IotInStream[roomId == 'CR-102' and motion == true]
+#window.time(5 sec)
+select
+  'CR102_R11' as ruleId,
+  buildingId,
+  roomId,
+  'LIGHTS_DIM_40' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'Motion and lux > 1000 for 5s: dim lights' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR102_R11' and minLux > 1000L]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR102_R12: motion + lux < 100 for 5s -> lights on 100% */
+from IotInStream[roomId == 'CR-102' and motion == true]
+#window.time(5 sec)
+select
+  'CR102_R12' as ruleId,
+  buildingId,
+  roomId,
+  'LIGHTS_ON_100' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'Motion and lux < 100 for 5s: lights on 100%' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR102_R12' and maxLux < 100L]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+
+/* ================= CR-103 rules ================= */
+/* CR103_R01: after 18:00 + no motion 10s + door closed -> lights off + HVAC eco */
+from IotInStream[roomId == 'CR-103' and motion == false and doorOpen == false]
+#window.time(10 sec)
+select
+  'CR103_R01' as ruleId,
+  buildingId,
+  roomId,
+  'LIGHTS_OFF_HVAC_ECO' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'After 18:00, no motion for 10s and door closed: lights off + HVAC eco mode' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR103_R01' and (ts % 86400000L) >= 64800000L]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR103_R02: motion + CO2 > 1100ppm for 5s -> HVAC boost */
+from IotInStream[roomId == 'CR-103' and motion == true]
+#window.time(5 sec)
+select
+  'CR103_R02' as ruleId,
+  buildingId,
+  roomId,
+  'HVAC_BOOST' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'Motion and CO2 > 1100ppm for 5s: HVAC boost' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR103_R02' and minCo2 > 1100L]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR103_R03: motion + temp > 27C for 10s -> setpoint -1C */
+from IotInStream[roomId == 'CR-103' and motion == true]
+#window.time(10 sec)
+select
+  'CR103_R03' as ruleId,
+  buildingId,
+  roomId,
+  'SETPOINT_DEC' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  (max(temp) - min(temp)) as rise,
+  'Motion and temp > 27C for 10s: decrease setpoint by 1C' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR103_R03' and minTemp > 27.0]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR103_R04: motion + lux < 180 for 5s -> LIGHTS_ON_90 */
+from IotInStream[roomId == 'CR-103' and motion == true]
+#window.time(5 sec)
+select
+  'CR103_R04' as ruleId,
+  buildingId,
+  roomId,
+  'LIGHTS_ON_90' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'Motion and lux < 180 for 5s: lights on' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR103_R04' and maxLux < 180L]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR103_R05: door open + no motion 5s -> close door */
+from IotInStream[roomId == 'CR-103' and doorOpen == true and motion == false]
+#window.time(5 sec)
+select
+  'CR103_R05' as ruleId,
+  buildingId,
+  roomId,
+  'DOOR_CLOSE' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'Door open and no motion for 5s: close door' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR103_R05']
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR103_R06: door open + motion + after 22:00 -> security alert */
+from IotInStream[roomId == 'CR-103' and doorOpen == true and motion == true]
+select
+  'CR103_R06' as ruleId,
+  buildingId,
+  roomId,
+  'SECURITY_ALERT' as action,
+  temp,
+  co2,
+  0.0 as rise,
+  'Door opened with motion after 22:00: security alert' as msg,
+  ts
+having (ts % 86400000L) >= 79200000L
+insert into Alerts;
+/* CR103_R07: door closed + no motion 30s -> lights off */
+from IotInStream[roomId == 'CR-103' and doorOpen == false and motion == false]
+#window.time(30 sec)
+select
+  'CR103_R07' as ruleId,
+  buildingId,
+  roomId,
+  'LIGHTS_OFF' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'Door closed and no motion for 30s: lights off' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR103_R07']
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR103_R08: motion + CO2 > 1100 + temp > 25 -> HVAC boost */
+from IotInStream[roomId == 'CR-103' and motion == true and co2 > 1100L and temp > 25.0]
+select
+  'CR103_R08' as ruleId,
+  buildingId,
+  roomId,
+  'HVAC_BOOST' as action,
+  temp,
+  co2,
+  0.0 as rise,
+  'Motion, CO2 > 1100ppm and temp > 25C: HVAC boost' as msg,
+  ts
+insert into Alerts;
+/* CR103_R09: motion + temp < 18C for 5s -> setpoint +1C */
+from IotInStream[roomId == 'CR-103' and motion == true]
+#window.time(5 sec)
+select
+  'CR103_R09' as ruleId,
+  buildingId,
+  roomId,
+  'SETPOINT_INC' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  (max(temp) - min(temp)) as rise,
+  'Motion and temp < 18C for 5s: increase setpoint by 1C' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR103_R09' and maxTemp < 18.0]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR103_R10: motion + lux > 700 for 5s -> LIGHTS_DIM_60 */
+from IotInStream[roomId == 'CR-103' and motion == true]
+#window.time(5 sec)
+select
+  'CR103_R10' as ruleId,
+  buildingId,
+  roomId,
+  'LIGHTS_DIM_60' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'Motion and lux > 700 for 5s: dim lights' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR103_R10' and minLux > 700L and maxLux <= 1000L]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR103_R11: motion + lux > 1000 for 5s -> LIGHTS_DIM_40 */
+from IotInStream[roomId == 'CR-103' and motion == true]
+#window.time(5 sec)
+select
+  'CR103_R11' as ruleId,
+  buildingId,
+  roomId,
+  'LIGHTS_DIM_40' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'Motion and lux > 1000 for 5s: dim lights' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR103_R11' and minLux > 1000L]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR103_R12: motion + lux < 100 for 5s -> lights on 100% */
+from IotInStream[roomId == 'CR-103' and motion == true]
+#window.time(5 sec)
+select
+  'CR103_R12' as ruleId,
+  buildingId,
+  roomId,
+  'LIGHTS_ON_100' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'Motion and lux < 100 for 5s: lights on 100%' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR103_R12' and maxLux < 100L]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+
+/* ================= CR-104 rules ================= */
+/* CR104_R01: after 18:00 + no motion 10s + door closed -> lights off + HVAC eco */
+from IotInStream[roomId == 'CR-104' and motion == false and doorOpen == false]
+#window.time(10 sec)
+select
+  'CR104_R01' as ruleId,
+  buildingId,
+  roomId,
+  'LIGHTS_OFF_HVAC_ECO' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'After 18:00, no motion for 10s and door closed: lights off + HVAC eco mode' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR104_R01' and (ts % 86400000L) >= 64800000L]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR104_R02: motion + CO2 > 1000ppm for 5s -> HVAC boost */
+from IotInStream[roomId == 'CR-104' and motion == true]
+#window.time(5 sec)
+select
+  'CR104_R02' as ruleId,
+  buildingId,
+  roomId,
+  'HVAC_BOOST' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'Motion and CO2 > 1000ppm for 5s: HVAC boost' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR104_R02' and minCo2 > 1000L]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR104_R03: motion + temp > 25C for 10s -> setpoint -1C */
+from IotInStream[roomId == 'CR-104' and motion == true]
+#window.time(10 sec)
+select
+  'CR104_R03' as ruleId,
+  buildingId,
+  roomId,
+  'SETPOINT_DEC' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  (max(temp) - min(temp)) as rise,
+  'Motion and temp > 25C for 10s: decrease setpoint by 1C' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR104_R03' and minTemp > 25.0]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR104_R04: motion + lux < 150 for 5s -> LIGHTS_ON_90 */
+from IotInStream[roomId == 'CR-104' and motion == true]
+#window.time(5 sec)
+select
+  'CR104_R04' as ruleId,
+  buildingId,
+  roomId,
+  'LIGHTS_ON_90' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'Motion and lux < 150 for 5s: lights on' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR104_R04' and maxLux < 150L]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR104_R05: door open + no motion 5s -> close door */
+from IotInStream[roomId == 'CR-104' and doorOpen == true and motion == false]
+#window.time(5 sec)
+select
+  'CR104_R05' as ruleId,
+  buildingId,
+  roomId,
+  'DOOR_CLOSE' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'Door open and no motion for 5s: close door' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR104_R05']
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR104_R06: door open + motion + after 22:00 -> security alert */
+from IotInStream[roomId == 'CR-104' and doorOpen == true and motion == true]
+select
+  'CR104_R06' as ruleId,
+  buildingId,
+  roomId,
+  'SECURITY_ALERT' as action,
+  temp,
+  co2,
+  0.0 as rise,
+  'Door opened with motion after 22:00: security alert' as msg,
+  ts
+having (ts % 86400000L) >= 79200000L
+insert into Alerts;
+/* CR104_R07: door closed + no motion 30s -> lights off */
+from IotInStream[roomId == 'CR-104' and doorOpen == false and motion == false]
+#window.time(30 sec)
+select
+  'CR104_R07' as ruleId,
+  buildingId,
+  roomId,
+  'LIGHTS_OFF' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'Door closed and no motion for 30s: lights off' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR104_R07']
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR104_R08: motion + CO2 > 1000 + temp > 24 -> HVAC boost */
+from IotInStream[roomId == 'CR-104' and motion == true and co2 > 1000L and temp > 24.0]
+select
+  'CR104_R08' as ruleId,
+  buildingId,
+  roomId,
+  'HVAC_BOOST' as action,
+  temp,
+  co2,
+  0.0 as rise,
+  'Motion, CO2 > 1000ppm and temp > 24C: HVAC boost' as msg,
+  ts
+insert into Alerts;
+/* CR104_R09: motion + temp < 19C for 5s -> setpoint +1C */
+from IotInStream[roomId == 'CR-104' and motion == true]
+#window.time(5 sec)
+select
+  'CR104_R09' as ruleId,
+  buildingId,
+  roomId,
+  'SETPOINT_INC' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  (max(temp) - min(temp)) as rise,
+  'Motion and temp < 19C for 5s: increase setpoint by 1C' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR104_R09' and maxTemp < 19.0]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR104_R10: motion + lux > 800 for 5s -> LIGHTS_DIM_40 */
+from IotInStream[roomId == 'CR-104' and motion == true]
+#window.time(5 sec)
+select
+  'CR104_R10' as ruleId,
+  buildingId,
+  roomId,
+  'LIGHTS_DIM_40' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'Motion and lux > 800 for 5s: dim lights' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR104_R10' and minLux > 800L and maxLux <= 1000L]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR104_R11: motion + lux > 1000 for 5s -> LIGHTS_DIM_30 */
+from IotInStream[roomId == 'CR-104' and motion == true]
+#window.time(5 sec)
+select
+  'CR104_R11' as ruleId,
+  buildingId,
+  roomId,
+  'LIGHTS_DIM_30' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'Motion and lux > 1000 for 5s: dim lights' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR104_R11' and minLux > 1000L]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR104_R12: motion + lux < 100 for 5s -> lights on 100% */
+from IotInStream[roomId == 'CR-104' and motion == true]
+#window.time(5 sec)
+select
+  'CR104_R12' as ruleId,
+  buildingId,
+  roomId,
+  'LIGHTS_ON_100' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'Motion and lux < 100 for 5s: lights on 100%' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR104_R12' and maxLux < 100L]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+
+/* ================= CR-105 rules ================= */
+/* CR105_R01: after 18:00 + no motion 10s + door closed -> lights off + HVAC eco */
+from IotInStream[roomId == 'CR-105' and motion == false and doorOpen == false]
+#window.time(10 sec)
+select
+  'CR105_R01' as ruleId,
+  buildingId,
+  roomId,
+  'LIGHTS_OFF_HVAC_ECO' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'After 18:00, no motion for 10s and door closed: lights off + HVAC eco mode' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR105_R01' and (ts % 86400000L) >= 64800000L]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR105_R02: motion + CO2 > 900ppm for 5s -> HVAC boost */
+from IotInStream[roomId == 'CR-105' and motion == true]
+#window.time(5 sec)
+select
+  'CR105_R02' as ruleId,
+  buildingId,
+  roomId,
+  'HVAC_BOOST' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'Motion and CO2 > 900ppm for 5s: HVAC boost' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR105_R02' and minCo2 > 900L]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR105_R03: motion + temp > 28C for 10s -> setpoint -1C */
+from IotInStream[roomId == 'CR-105' and motion == true]
+#window.time(10 sec)
+select
+  'CR105_R03' as ruleId,
+  buildingId,
+  roomId,
+  'SETPOINT_DEC' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  (max(temp) - min(temp)) as rise,
+  'Motion and temp > 28C for 10s: decrease setpoint by 1C' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR105_R03' and minTemp > 28.0]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR105_R04: motion + lux < 150 for 5s -> LIGHTS_ON_90 */
+from IotInStream[roomId == 'CR-105' and motion == true]
+#window.time(5 sec)
+select
+  'CR105_R04' as ruleId,
+  buildingId,
+  roomId,
+  'LIGHTS_ON_90' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'Motion and lux < 150 for 5s: lights on' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR105_R04' and maxLux < 150L]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR105_R05: door open + no motion 15s -> close door */
+from IotInStream[roomId == 'CR-105' and doorOpen == true and motion == false]
+#window.time(15 sec)
+select
+  'CR105_R05' as ruleId,
+  buildingId,
+  roomId,
+  'DOOR_CLOSE' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'Door open and no motion for 15s: close door' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR105_R05']
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR105_R06: door open + motion + after 22:00 -> security alert */
+from IotInStream[roomId == 'CR-105' and doorOpen == true and motion == true]
+select
+  'CR105_R06' as ruleId,
+  buildingId,
+  roomId,
+  'SECURITY_ALERT' as action,
+  temp,
+  co2,
+  0.0 as rise,
+  'Door opened with motion after 22:00: security alert' as msg,
+  ts
+having (ts % 86400000L) >= 79200000L
+insert into Alerts;
+/* CR105_R07: door closed + no motion 30s -> lights off */
+from IotInStream[roomId == 'CR-105' and doorOpen == false and motion == false]
+#window.time(30 sec)
+select
+  'CR105_R07' as ruleId,
+  buildingId,
+  roomId,
+  'LIGHTS_OFF' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'Door closed and no motion for 30s: lights off' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR105_R07']
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR105_R08: motion + CO2 > 900 + temp > 26 -> HVAC boost */
+from IotInStream[roomId == 'CR-105' and motion == true and co2 > 900L and temp > 26.0]
+select
+  'CR105_R08' as ruleId,
+  buildingId,
+  roomId,
+  'HVAC_BOOST' as action,
+  temp,
+  co2,
+  0.0 as rise,
+  'Motion, CO2 > 900ppm and temp > 26C: HVAC boost' as msg,
+  ts
+insert into Alerts;
+/* CR105_R09: motion + temp < 20C for 5s -> setpoint +1C */
+from IotInStream[roomId == 'CR-105' and motion == true]
+#window.time(5 sec)
+select
+  'CR105_R09' as ruleId,
+  buildingId,
+  roomId,
+  'SETPOINT_INC' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  (max(temp) - min(temp)) as rise,
+  'Motion and temp < 20C for 5s: increase setpoint by 1C' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR105_R09' and maxTemp < 20.0]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR105_R10: motion + lux > 750 for 5s -> LIGHTS_DIM_50 */
+from IotInStream[roomId == 'CR-105' and motion == true]
+#window.time(5 sec)
+select
+  'CR105_R10' as ruleId,
+  buildingId,
+  roomId,
+  'LIGHTS_DIM_50' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'Motion and lux > 750 for 5s: dim lights' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR105_R10' and minLux > 750L and maxLux <= 1000L]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR105_R11: motion + lux > 1000 for 5s -> LIGHTS_DIM_30 */
+from IotInStream[roomId == 'CR-105' and motion == true]
+#window.time(5 sec)
+select
+  'CR105_R11' as ruleId,
+  buildingId,
+  roomId,
+  'LIGHTS_DIM_30' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'Motion and lux > 1000 for 5s: dim lights' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR105_R11' and minLux > 1000L]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR105_R12: motion + lux < 150 for 5s -> lights on 100% */
+from IotInStream[roomId == 'CR-105' and motion == true]
+#window.time(5 sec)
+select
+  'CR105_R12' as ruleId,
+  buildingId,
+  roomId,
+  'LIGHTS_ON_100' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'Motion and lux < 150 for 5s: lights on 100%' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR105_R12' and maxLux < 150L]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+
+/* ================= DUPLICATED 60 RULES WITH SECONDS WINDOWS ================= */
+
+/* ================= CR-101 duplicated rules ================= */
+/* CR101_R13: after 18:00 + no motion 10s + door closed -> lights off + HVAC eco */
+from IotInStream[roomId == 'CR-101' and motion == false and doorOpen == false]
+#window.time(10 sec)
+select
+  'CR101_R13' as ruleId,
+  buildingId,
+  roomId,
+  'LIGHTS_OFF_HVAC_ECO' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'DUP After 18:00, no motion for 10s and door closed: lights off + HVAC eco mode' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR101_R13' and (ts % 86400000L) >= 64800000L]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR101_R14: motion + CO2 > 1000ppm for 5s -> HVAC boost */
+from IotInStream[roomId == 'CR-101' and motion == true]
+#window.time(5 sec)
+select
+  'CR101_R14' as ruleId,
+  buildingId,
+  roomId,
+  'HVAC_BOOST' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'DUP Motion and CO2 > 1000ppm for 5s: HVAC boost' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR101_R14' and minCo2 > 1000L]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR101_R15: motion + temp > 26C for 10s -> setpoint -1C */
+from IotInStream[roomId == 'CR-101' and motion == true]
+#window.time(10 sec)
+select
+  'CR101_R15' as ruleId,
+  buildingId,
+  roomId,
+  'SETPOINT_DEC' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  (max(temp) - min(temp)) as rise,
+  'DUP Motion and temp > 26C for 10s: decrease setpoint by 1C' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR101_R15' and minTemp > 26.0]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR101_R16: motion + lux < 200 for 5s -> LIGHTS_ON_80 */
+from IotInStream[roomId == 'CR-101' and motion == true]
+#window.time(5 sec)
+select
+  'CR101_R16' as ruleId,
+  buildingId,
+  roomId,
+  'LIGHTS_ON_80' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'DUP Motion and lux < 200 for 5s: lights on' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR101_R16' and maxLux < 200L]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR101_R17: door open + no motion 25s -> close door */
+from IotInStream[roomId == 'CR-101' and doorOpen == true and motion == false]
+#window.time(25 sec)
+select
+  'CR101_R17' as ruleId,
+  buildingId,
+  roomId,
+  'DOOR_CLOSE' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'DUP Door open and no motion for 25s: close door' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR101_R17']
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR101_R18: door open + motion + after 22:00 -> security alert */
+from IotInStream[roomId == 'CR-101' and doorOpen == true and motion == true]
+select
+  'CR101_R18' as ruleId,
+  buildingId,
+  roomId,
+  'SECURITY_ALERT' as action,
+  temp,
+  co2,
+  0.0 as rise,
+  'DUP Door opened with motion after 22:00: security alert' as msg,
+  ts
+having (ts % 86400000L) >= 79200000L
+insert into Alerts;
+/* CR101_R19: door closed + no motion 30s -> lights off */
+from IotInStream[roomId == 'CR-101' and doorOpen == false and motion == false]
+#window.time(30 sec)
+select
+  'CR101_R19' as ruleId,
+  buildingId,
+  roomId,
+  'LIGHTS_OFF' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'DUP Door closed and no motion for 30s: lights off' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR101_R19']
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR101_R20: motion + CO2 > 1000 + temp > 25 -> HVAC boost */
+from IotInStream[roomId == 'CR-101' and motion == true and co2 > 1000L and temp > 25.0]
+select
+  'CR101_R20' as ruleId,
+  buildingId,
+  roomId,
+  'HVAC_BOOST' as action,
+  temp,
+  co2,
+  0.0 as rise,
+  'DUP Motion, CO2 > 1000ppm and temp > 25C: HVAC boost' as msg,
+  ts
+insert into Alerts;
+/* CR101_R21: motion + temp < 22C for 5s -> setpoint +1C */
+from IotInStream[roomId == 'CR-101' and motion == true]
+#window.time(5 sec)
+select
+  'CR101_R21' as ruleId,
+  buildingId,
+  roomId,
+  'SETPOINT_INC' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  (max(temp) - min(temp)) as rise,
+  'DUP Motion and temp < 22C for 5s: increase setpoint by 1C' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR101_R21' and maxTemp < 22.0]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR101_R22: motion + lux > 700 for 5s -> LIGHTS_DIM_60 */
+from IotInStream[roomId == 'CR-101' and motion == true]
+#window.time(5 sec)
+select
+  'CR101_R22' as ruleId,
+  buildingId,
+  roomId,
+  'LIGHTS_DIM_60' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'DUP Motion and lux > 700 for 5s: dim lights' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR101_R22' and minLux > 700L and maxLux <= 1000L]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR101_R23: motion + lux > 1000 for 5s -> LIGHTS_DIM_40 */
+from IotInStream[roomId == 'CR-101' and motion == true]
+#window.time(5 sec)
+select
+  'CR101_R23' as ruleId,
+  buildingId,
+  roomId,
+  'LIGHTS_DIM_40' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'DUP Motion and lux > 1000 for 5s: dim lights' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR101_R23' and minLux > 1000L]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR101_R24: motion + lux < 100 for 5s -> lights on 100% */
+from IotInStream[roomId == 'CR-101' and motion == true]
+#window.time(5 sec)
+select
+  'CR101_R24' as ruleId,
+  buildingId,
+  roomId,
+  'LIGHTS_ON_100' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'DUP Motion and lux < 100 for 5s: lights on 100%' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR101_R24' and maxLux < 100L]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+
+/* ================= CR-102 duplicated rules ================= */
+/* CR102_R13: after 18:00 + no motion 10s + door closed -> lights off + HVAC eco */
+from IotInStream[roomId == 'CR-102' and motion == false and doorOpen == false]
+#window.time(10 sec)
+select
+  'CR102_R13' as ruleId,
+  buildingId,
+  roomId,
+  'LIGHTS_OFF_HVAC_ECO' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'DUP After 18:00, no motion for 10s and door closed: lights off + HVAC eco mode' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR102_R13' and (ts % 86400000L) >= 64800000L]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR102_R14: motion + CO2 > 950ppm for 5s -> HVAC boost */
+from IotInStream[roomId == 'CR-102' and motion == true]
+#window.time(5 sec)
+select
+  'CR102_R14' as ruleId,
+  buildingId,
+  roomId,
+  'HVAC_BOOST' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'DUP Motion and CO2 > 950ppm for 5s: HVAC boost' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR102_R14' and minCo2 > 950L]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR102_R15: motion + temp > 28C for 10s -> setpoint -1C */
+from IotInStream[roomId == 'CR-102' and motion == true]
+#window.time(10 sec)
+select
+  'CR102_R15' as ruleId,
+  buildingId,
+  roomId,
+  'SETPOINT_DEC' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  (max(temp) - min(temp)) as rise,
+  'DUP Motion and temp > 28C for 10s: decrease setpoint by 1C' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR102_R15' and minTemp > 28.0]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR102_R16: motion + lux < 250 for 5s -> LIGHTS_ON_70 */
+from IotInStream[roomId == 'CR-102' and motion == true]
+#window.time(5 sec)
+select
+  'CR102_R16' as ruleId,
+  buildingId,
+  roomId,
+  'LIGHTS_ON_70' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'DUP Motion and lux < 250 for 5s: lights on' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR102_R16' and maxLux < 250L]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR102_R17: door open + no motion 15s -> close door */
+from IotInStream[roomId == 'CR-102' and doorOpen == true and motion == false]
+#window.time(15 sec)
+select
+  'CR102_R17' as ruleId,
+  buildingId,
+  roomId,
+  'DOOR_CLOSE' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'DUP Door open and no motion for 15s: close door' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR102_R17']
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR102_R18: door open + motion + after 22:00 -> security alert */
+from IotInStream[roomId == 'CR-102' and doorOpen == true and motion == true]
+select
+  'CR102_R18' as ruleId,
+  buildingId,
+  roomId,
+  'SECURITY_ALERT' as action,
+  temp,
+  co2,
+  0.0 as rise,
+  'DUP Door opened with motion after 22:00: security alert' as msg,
+  ts
+having (ts % 86400000L) >= 79200000L
+insert into Alerts;
+/* CR102_R19: door closed + no motion 30s -> lights off */
+from IotInStream[roomId == 'CR-102' and doorOpen == false and motion == false]
+#window.time(30 sec)
+select
+  'CR102_R19' as ruleId,
+  buildingId,
+  roomId,
+  'LIGHTS_OFF' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'DUP Door closed and no motion for 30s: lights off' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR102_R19']
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR102_R20: motion + CO2 > 950 + temp > 26 -> HVAC boost */
+from IotInStream[roomId == 'CR-102' and motion == true and co2 > 950L and temp > 26.0]
+select
+  'CR102_R20' as ruleId,
+  buildingId,
+  roomId,
+  'HVAC_BOOST' as action,
+  temp,
+  co2,
+  0.0 as rise,
+  'DUP Motion, CO2 > 950ppm and temp > 26C: HVAC boost' as msg,
+  ts
+insert into Alerts;
+/* CR102_R21: motion + temp < 20C for 5s -> setpoint +1C */
+from IotInStream[roomId == 'CR-102' and motion == true]
+#window.time(5 sec)
+select
+  'CR102_R21' as ruleId,
+  buildingId,
+  roomId,
+  'SETPOINT_INC' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  (max(temp) - min(temp)) as rise,
+  'DUP Motion and temp < 20C for 5s: increase setpoint by 1C' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR102_R21' and maxTemp < 20.0]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR102_R22: motion + lux > 600 for 5s -> LIGHTS_DIM_50 */
+from IotInStream[roomId == 'CR-102' and motion == true]
+#window.time(5 sec)
+select
+  'CR102_R22' as ruleId,
+  buildingId,
+  roomId,
+  'LIGHTS_DIM_50' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'DUP Motion and lux > 600 for 5s: dim lights' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR102_R22' and minLux > 600L and maxLux <= 1000L]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR102_R23: motion + lux > 1000 for 5s -> LIGHTS_DIM_40 */
+from IotInStream[roomId == 'CR-102' and motion == true]
+#window.time(5 sec)
+select
+  'CR102_R23' as ruleId,
+  buildingId,
+  roomId,
+  'LIGHTS_DIM_40' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'DUP Motion and lux > 1000 for 5s: dim lights' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR102_R23' and minLux > 1000L]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR102_R24: motion + lux < 100 for 5s -> lights on 100% */
+from IotInStream[roomId == 'CR-102' and motion == true]
+#window.time(5 sec)
+select
+  'CR102_R24' as ruleId,
+  buildingId,
+  roomId,
+  'LIGHTS_ON_100' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'DUP Motion and lux < 100 for 5s: lights on 100%' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR102_R24' and maxLux < 100L]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+
+/* ================= CR-103 duplicated rules ================= */
+/* CR103_R13: after 18:00 + no motion 10s + door closed -> lights off + HVAC eco */
+from IotInStream[roomId == 'CR-103' and motion == false and doorOpen == false]
+#window.time(10 sec)
+select
+  'CR103_R13' as ruleId,
+  buildingId,
+  roomId,
+  'LIGHTS_OFF_HVAC_ECO' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'DUP After 18:00, no motion for 10s and door closed: lights off + HVAC eco mode' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR103_R13' and (ts % 86400000L) >= 64800000L]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR103_R14: motion + CO2 > 1100ppm for 5s -> HVAC boost */
+from IotInStream[roomId == 'CR-103' and motion == true]
+#window.time(5 sec)
+select
+  'CR103_R14' as ruleId,
+  buildingId,
+  roomId,
+  'HVAC_BOOST' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'DUP Motion and CO2 > 1100ppm for 5s: HVAC boost' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR103_R14' and minCo2 > 1100L]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR103_R15: motion + temp > 27C for 10s -> setpoint -1C */
+from IotInStream[roomId == 'CR-103' and motion == true]
+#window.time(10 sec)
+select
+  'CR103_R15' as ruleId,
+  buildingId,
+  roomId,
+  'SETPOINT_DEC' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  (max(temp) - min(temp)) as rise,
+  'DUP Motion and temp > 27C for 10s: decrease setpoint by 1C' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR103_R15' and minTemp > 27.0]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR103_R16: motion + lux < 180 for 5s -> LIGHTS_ON_90 */
+from IotInStream[roomId == 'CR-103' and motion == true]
+#window.time(5 sec)
+select
+  'CR103_R16' as ruleId,
+  buildingId,
+  roomId,
+  'LIGHTS_ON_90' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'DUP Motion and lux < 180 for 5s: lights on' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR103_R16' and maxLux < 180L]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR103_R17: door open + no motion 5s -> close door */
+from IotInStream[roomId == 'CR-103' and doorOpen == true and motion == false]
+#window.time(5 sec)
+select
+  'CR103_R17' as ruleId,
+  buildingId,
+  roomId,
+  'DOOR_CLOSE' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'DUP Door open and no motion for 5s: close door' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR103_R17']
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR103_R18: door open + motion + after 22:00 -> security alert */
+from IotInStream[roomId == 'CR-103' and doorOpen == true and motion == true]
+select
+  'CR103_R18' as ruleId,
+  buildingId,
+  roomId,
+  'SECURITY_ALERT' as action,
+  temp,
+  co2,
+  0.0 as rise,
+  'DUP Door opened with motion after 22:00: security alert' as msg,
+  ts
+having (ts % 86400000L) >= 79200000L
+insert into Alerts;
+/* CR103_R19: door closed + no motion 30s -> lights off */
+from IotInStream[roomId == 'CR-103' and doorOpen == false and motion == false]
+#window.time(30 sec)
+select
+  'CR103_R19' as ruleId,
+  buildingId,
+  roomId,
+  'LIGHTS_OFF' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'DUP Door closed and no motion for 30s: lights off' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR103_R19']
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR103_R20: motion + CO2 > 1100 + temp > 25 -> HVAC boost */
+from IotInStream[roomId == 'CR-103' and motion == true and co2 > 1100L and temp > 25.0]
+select
+  'CR103_R20' as ruleId,
+  buildingId,
+  roomId,
+  'HVAC_BOOST' as action,
+  temp,
+  co2,
+  0.0 as rise,
+  'DUP Motion, CO2 > 1100ppm and temp > 25C: HVAC boost' as msg,
+  ts
+insert into Alerts;
+/* CR103_R21: motion + temp < 18C for 5s -> setpoint +1C */
+from IotInStream[roomId == 'CR-103' and motion == true]
+#window.time(5 sec)
+select
+  'CR103_R21' as ruleId,
+  buildingId,
+  roomId,
+  'SETPOINT_INC' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  (max(temp) - min(temp)) as rise,
+  'DUP Motion and temp < 18C for 5s: increase setpoint by 1C' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR103_R21' and maxTemp < 18.0]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR103_R22: motion + lux > 700 for 5s -> LIGHTS_DIM_60 */
+from IotInStream[roomId == 'CR-103' and motion == true]
+#window.time(5 sec)
+select
+  'CR103_R22' as ruleId,
+  buildingId,
+  roomId,
+  'LIGHTS_DIM_60' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'DUP Motion and lux > 700 for 5s: dim lights' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR103_R22' and minLux > 700L and maxLux <= 1000L]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR103_R23: motion + lux > 1000 for 5s -> LIGHTS_DIM_40 */
+from IotInStream[roomId == 'CR-103' and motion == true]
+#window.time(5 sec)
+select
+  'CR103_R23' as ruleId,
+  buildingId,
+  roomId,
+  'LIGHTS_DIM_40' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'DUP Motion and lux > 1000 for 5s: dim lights' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR103_R23' and minLux > 1000L]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR103_R24: motion + lux < 100 for 5s -> lights on 100% */
+from IotInStream[roomId == 'CR-103' and motion == true]
+#window.time(5 sec)
+select
+  'CR103_R24' as ruleId,
+  buildingId,
+  roomId,
+  'LIGHTS_ON_100' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'DUP Motion and lux < 100 for 5s: lights on 100%' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR103_R24' and maxLux < 100L]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+
+/* ================= CR-104 duplicated rules ================= */
+/* CR104_R13: after 18:00 + no motion 10s + door closed -> lights off + HVAC eco */
+from IotInStream[roomId == 'CR-104' and motion == false and doorOpen == false]
+#window.time(10 sec)
+select
+  'CR104_R13' as ruleId,
+  buildingId,
+  roomId,
+  'LIGHTS_OFF_HVAC_ECO' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'DUP After 18:00, no motion for 10s and door closed: lights off + HVAC eco mode' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR104_R13' and (ts % 86400000L) >= 64800000L]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR104_R14: motion + CO2 > 1000ppm for 5s -> HVAC boost */
+from IotInStream[roomId == 'CR-104' and motion == true]
+#window.time(5 sec)
+select
+  'CR104_R14' as ruleId,
+  buildingId,
+  roomId,
+  'HVAC_BOOST' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'DUP Motion and CO2 > 1000ppm for 5s: HVAC boost' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR104_R14' and minCo2 > 1000L]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR104_R15: motion + temp > 25C for 10s -> setpoint -1C */
+from IotInStream[roomId == 'CR-104' and motion == true]
+#window.time(10 sec)
+select
+  'CR104_R15' as ruleId,
+  buildingId,
+  roomId,
+  'SETPOINT_DEC' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  (max(temp) - min(temp)) as rise,
+  'DUP Motion and temp > 25C for 10s: decrease setpoint by 1C' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR104_R15' and minTemp > 25.0]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR104_R16: motion + lux < 150 for 5s -> LIGHTS_ON_90 */
+from IotInStream[roomId == 'CR-104' and motion == true]
+#window.time(5 sec)
+select
+  'CR104_R16' as ruleId,
+  buildingId,
+  roomId,
+  'LIGHTS_ON_90' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'DUP Motion and lux < 150 for 5s: lights on' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR104_R16' and maxLux < 150L]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR104_R17: door open + no motion 5s -> close door */
+from IotInStream[roomId == 'CR-104' and doorOpen == true and motion == false]
+#window.time(5 sec)
+select
+  'CR104_R17' as ruleId,
+  buildingId,
+  roomId,
+  'DOOR_CLOSE' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'DUP Door open and no motion for 5s: close door' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR104_R17']
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR104_R18: door open + motion + after 22:00 -> security alert */
+from IotInStream[roomId == 'CR-104' and doorOpen == true and motion == true]
+select
+  'CR104_R18' as ruleId,
+  buildingId,
+  roomId,
+  'SECURITY_ALERT' as action,
+  temp,
+  co2,
+  0.0 as rise,
+  'DUP Door opened with motion after 22:00: security alert' as msg,
+  ts
+having (ts % 86400000L) >= 79200000L
+insert into Alerts;
+/* CR104_R19: door closed + no motion 30s -> lights off */
+from IotInStream[roomId == 'CR-104' and doorOpen == false and motion == false]
+#window.time(30 sec)
+select
+  'CR104_R19' as ruleId,
+  buildingId,
+  roomId,
+  'LIGHTS_OFF' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'DUP Door closed and no motion for 30s: lights off' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR104_R19']
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR104_R20: motion + CO2 > 1000 + temp > 24 -> HVAC boost */
+from IotInStream[roomId == 'CR-104' and motion == true and co2 > 1000L and temp > 24.0]
+select
+  'CR104_R20' as ruleId,
+  buildingId,
+  roomId,
+  'HVAC_BOOST' as action,
+  temp,
+  co2,
+  0.0 as rise,
+  'DUP Motion, CO2 > 1000ppm and temp > 24C: HVAC boost' as msg,
+  ts
+insert into Alerts;
+/* CR104_R21: motion + temp < 19C for 5s -> setpoint +1C */
+from IotInStream[roomId == 'CR-104' and motion == true]
+#window.time(5 sec)
+select
+  'CR104_R21' as ruleId,
+  buildingId,
+  roomId,
+  'SETPOINT_INC' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  (max(temp) - min(temp)) as rise,
+  'DUP Motion and temp < 19C for 5s: increase setpoint by 1C' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR104_R21' and maxTemp < 19.0]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR104_R22: motion + lux > 800 for 5s -> LIGHTS_DIM_40 */
+from IotInStream[roomId == 'CR-104' and motion == true]
+#window.time(5 sec)
+select
+  'CR104_R22' as ruleId,
+  buildingId,
+  roomId,
+  'LIGHTS_DIM_40' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'DUP Motion and lux > 800 for 5s: dim lights' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR104_R22' and minLux > 800L and maxLux <= 1000L]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR104_R23: motion + lux > 1000 for 5s -> LIGHTS_DIM_30 */
+from IotInStream[roomId == 'CR-104' and motion == true]
+#window.time(5 sec)
+select
+  'CR104_R23' as ruleId,
+  buildingId,
+  roomId,
+  'LIGHTS_DIM_30' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'DUP Motion and lux > 1000 for 5s: dim lights' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR104_R23' and minLux > 1000L]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR104_R24: motion + lux < 100 for 5s -> lights on 100% */
+from IotInStream[roomId == 'CR-104' and motion == true]
+#window.time(5 sec)
+select
+  'CR104_R24' as ruleId,
+  buildingId,
+  roomId,
+  'LIGHTS_ON_100' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'DUP Motion and lux < 100 for 5s: lights on 100%' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR104_R24' and maxLux < 100L]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+
+/* ================= CR-105 duplicated rules ================= */
+/* CR105_R13: after 18:00 + no motion 10s + door closed -> lights off + HVAC eco */
+from IotInStream[roomId == 'CR-105' and motion == false and doorOpen == false]
+#window.time(10 sec)
+select
+  'CR105_R13' as ruleId,
+  buildingId,
+  roomId,
+  'LIGHTS_OFF_HVAC_ECO' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'DUP After 18:00, no motion for 10s and door closed: lights off + HVAC eco mode' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR105_R13' and (ts % 86400000L) >= 64800000L]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR105_R14: motion + CO2 > 900ppm for 5s -> HVAC boost */
+from IotInStream[roomId == 'CR-105' and motion == true]
+#window.time(5 sec)
+select
+  'CR105_R14' as ruleId,
+  buildingId,
+  roomId,
+  'HVAC_BOOST' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'DUP Motion and CO2 > 900ppm for 5s: HVAC boost' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR105_R14' and minCo2 > 900L]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR105_R15: motion + temp > 28C for 10s -> setpoint -1C */
+from IotInStream[roomId == 'CR-105' and motion == true]
+#window.time(10 sec)
+select
+  'CR105_R15' as ruleId,
+  buildingId,
+  roomId,
+  'SETPOINT_DEC' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  (max(temp) - min(temp)) as rise,
+  'DUP Motion and temp > 28C for 10s: decrease setpoint by 1C' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR105_R15' and minTemp > 28.0]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR105_R16: motion + lux < 150 for 5s -> LIGHTS_ON_90 */
+from IotInStream[roomId == 'CR-105' and motion == true]
+#window.time(5 sec)
+select
+  'CR105_R16' as ruleId,
+  buildingId,
+  roomId,
+  'LIGHTS_ON_90' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'DUP Motion and lux < 150 for 5s: lights on' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR105_R16' and maxLux < 150L]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR105_R17: door open + no motion 15s -> close door */
+from IotInStream[roomId == 'CR-105' and doorOpen == true and motion == false]
+#window.time(15 sec)
+select
+  'CR105_R17' as ruleId,
+  buildingId,
+  roomId,
+  'DOOR_CLOSE' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'DUP Door open and no motion for 15s: close door' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR105_R17']
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR105_R18: door open + motion + after 22:00 -> security alert */
+from IotInStream[roomId == 'CR-105' and doorOpen == true and motion == true]
+select
+  'CR105_R18' as ruleId,
+  buildingId,
+  roomId,
+  'SECURITY_ALERT' as action,
+  temp,
+  co2,
+  0.0 as rise,
+  'DUP Door opened with motion after 22:00: security alert' as msg,
+  ts
+having (ts % 86400000L) >= 79200000L
+insert into Alerts;
+/* CR105_R19: door closed + no motion 30s -> lights off */
+from IotInStream[roomId == 'CR-105' and doorOpen == false and motion == false]
+#window.time(30 sec)
+select
+  'CR105_R19' as ruleId,
+  buildingId,
+  roomId,
+  'LIGHTS_OFF' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'DUP Door closed and no motion for 30s: lights off' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR105_R19']
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR105_R20: motion + CO2 > 900 + temp > 26 -> HVAC boost */
+from IotInStream[roomId == 'CR-105' and motion == true and co2 > 900L and temp > 26.0]
+select
+  'CR105_R20' as ruleId,
+  buildingId,
+  roomId,
+  'HVAC_BOOST' as action,
+  temp,
+  co2,
+  0.0 as rise,
+  'DUP Motion, CO2 > 900ppm and temp > 26C: HVAC boost' as msg,
+  ts
+insert into Alerts;
+/* CR105_R21: motion + temp < 20C for 5s -> setpoint +1C */
+from IotInStream[roomId == 'CR-105' and motion == true]
+#window.time(5 sec)
+select
+  'CR105_R21' as ruleId,
+  buildingId,
+  roomId,
+  'SETPOINT_INC' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  (max(temp) - min(temp)) as rise,
+  'DUP Motion and temp < 20C for 5s: increase setpoint by 1C' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR105_R21' and maxTemp < 20.0]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR105_R22: motion + lux > 750 for 5s -> LIGHTS_DIM_50 */
+from IotInStream[roomId == 'CR-105' and motion == true]
+#window.time(5 sec)
+select
+  'CR105_R22' as ruleId,
+  buildingId,
+  roomId,
+  'LIGHTS_DIM_50' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'DUP Motion and lux > 750 for 5s: dim lights' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR105_R22' and minLux > 750L and maxLux <= 1000L]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR105_R23: motion + lux > 1000 for 5s -> LIGHTS_DIM_30 */
+from IotInStream[roomId == 'CR-105' and motion == true]
+#window.time(5 sec)
+select
+  'CR105_R23' as ruleId,
+  buildingId,
+  roomId,
+  'LIGHTS_DIM_30' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'DUP Motion and lux > 1000 for 5s: dim lights' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR105_R23' and minLux > 1000L]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+
+/* CR105_R24: motion + lux < 150 for 5s -> lights on 100% */
+from IotInStream[roomId == 'CR-105' and motion == true]
+#window.time(5 sec)
+select
+  'CR105_R24' as ruleId,
+  buildingId,
+  roomId,
+  'LIGHTS_ON_100' as action,
+  max(temp) as temp,
+  max(co2) as co2,
+  0.0 as rise,
+  'DUP Motion and lux < 150 for 5s: lights on 100%' as msg,
+  max(ts) as ts,
+  min(temp) as minTemp,
+  max(temp) as maxTemp,
+  min(co2) as minCo2,
+  max(co2) as maxCo2,
+  min(lux) as minLux,
+  max(lux) as maxLux
+group by buildingId, roomId
+insert into RuleAgg;
+
+from RuleAgg[ruleId == 'CR105_R24' and maxLux < 150L]
+select ruleId, buildingId, roomId, action, temp, co2, rise, msg, ts
+insert into Alerts;
+

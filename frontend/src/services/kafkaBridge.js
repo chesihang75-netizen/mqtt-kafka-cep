@@ -1,222 +1,99 @@
-import rules from './rules';
+export default function createKafkaBridge(opts = {}) {
+  const callbacks = {
+    onAlert: typeof opts.onAlert === 'function' ? opts.onAlert : () => {},
+    onSensor: typeof opts.onSensor === 'function' ? opts.onSensor : () => {},
+    onStatusChange:
+      typeof opts.onStatusChange === 'function' ? opts.onStatusChange : () => {},
+  };
 
-const ruleMap = new Map(rules.map((rule) => [rule.id, rule]));
+  let alertsES = null;
+  let sensorsES = null;
 
-function parseTimestamp(value) {
-  if (value == null) return new Date().toISOString();
-  if (typeof value === 'number' && Number.isFinite(value)) {
-    if (value > 1e12) return new Date(value).toISOString();
-    if (value > 1e9) return new Date(value * 1000).toISOString();
-  }
-  if (typeof value === 'string' && value.trim()) {
-    const numeric = Number(value);
-    if (!Number.isNaN(numeric)) {
-      return parseTimestamp(numeric);
-    }
-    const parsed = new Date(value);
-    if (!Number.isNaN(parsed.getTime())) {
-      return parsed.toISOString();
-    }
-  }
-  return new Date().toISOString();
-}
+  // ------- url 解析：优先显式覆盖，其次用 .env -------
+  function buildUrls() {
+    // 允许通过 VITE_ALERTS_STREAM_URL / VITE_SENSORS_STREAM_URL 覆盖
+    const alertsUrlEnv = import.meta.env.VITE_ALERTS_STREAM_URL;
+    const sensorsUrlEnv = import.meta.env.VITE_SENSORS_STREAM_URL;
 
-function toNumber(value) {
-  if (typeof value === 'number' && Number.isFinite(value)) return value;
-  if (typeof value === 'string' && value.trim()) {
-    const numeric = Number(value);
-    if (!Number.isNaN(numeric)) return numeric;
-  }
-  return undefined;
-}
+    // 否则走 base
+    const baseRaw = import.meta.env.VITE_KAFKA_BRIDGE_BASE_URL || '';
+    const base = String(baseRaw).replace(/\/$/, '');
 
-function toBoolean(value) {
-  if (typeof value === 'boolean') return value;
-  if (typeof value === 'number') return value !== 0;
-  if (typeof value === 'string') {
-    const normalised = value.trim().toLowerCase();
-    if (!normalised) return undefined;
-    return ['true', '1', 'yes', 'y', 'on', 'active'].includes(normalised);
-  }
-  return undefined;
-}
+    const alertsUrl = alertsUrlEnv || (base ? `${base}/stream/alerts` : '/stream/alerts');
+    const sensorsUrl = sensorsUrlEnv || (base ? `${base}/stream/input`  : '/stream/input');
 
-function normaliseAlert(payload) {
-  if (!payload || typeof payload !== 'object') return null;
-  const roomId = payload.roomId || payload.room_id;
-  const ruleId = payload.rule || payload.ruleId;
-  if (!roomId || !ruleId) return null;
-
-  const rule = ruleMap.get(ruleId);
-  const action = payload.action || payload.action_type;
-
-  const triggeredAt = parseTimestamp(payload.ts ?? payload.triggeredAt ?? payload.timestamp);
-
-  const telemetry = {};
-  const temperature = toNumber(payload.temp ?? payload.temperature ?? payload.max_temp);
-  if (Number.isFinite(temperature)) {
-    telemetry.temperature = temperature;
+    return { alertsUrl, sensorsUrl, hasBase: Boolean(base || alertsUrlEnv || sensorsUrlEnv) };
   }
 
-  const temperatureRise = toNumber(payload.rise ?? payload.tempRise ?? payload.temperatureRise);
-  if (Number.isFinite(temperatureRise)) {
-    telemetry.temperatureRise = temperatureRise;
+  // ------- 连接/关闭 -------
+  function close(es) {
+    try { es?.close(); } catch {}
   }
 
-  let changes = rule?.changes ? { ...rule.changes } : undefined;
-  if (payload.changes && typeof payload.changes === 'object' && !Array.isArray(payload.changes)) {
-    changes = { ...(changes || {}), ...payload.changes };
-  }
+  function start() {
+    const { alertsUrl, sensorsUrl, hasBase } = buildUrls();
 
-  if (action) {
-    switch (action) {
-      case 'HVAC_BOOST':
-        changes = { ...(changes || {}), hvac: changes?.hvac || 'BOOST' };
-        break;
-      case 'SETPOINT_DEC':
-        changes = {
-          ...(changes || {}),
-          setpointDelta: changes?.setpointDelta ?? -1,
+    // 如果完全没有配置（既没 base 也没覆盖），返回 false 让 useDashboard 走模拟
+    if (!hasBase) return false;
+
+    // 避免重复连接
+    stop();
+
+    // 对外可见：方便你在控制台检查 urls
+    api.urls = { alerts: alertsUrl, sensors: sensorsUrl };
+    // 也挂到全局便于排查
+    window.__bridge = api;
+
+    // alerts
+    alertsES = new EventSource(alertsUrl);
+    alertsES.onopen = () => callbacks.onStatusChange('alerts', true);
+    alertsES.onerror = () => callbacks.onStatusChange('alerts', false);
+    alertsES.onmessage = (e) => {
+      try {
+        const msg = JSON.parse(e.data);
+        // 直接把 Siddhi/bridge 的 alerts 透传给 UI
+        callbacks.onAlert(msg);
+      } catch {
+        // 忽略非 JSON
+      }
+    };
+
+    // sensors
+    sensorsES = new EventSource(sensorsUrl);
+    sensorsES.onopen = () => callbacks.onStatusChange('sensors', true);
+    sensorsES.onerror = () => callbacks.onStatusChange('sensors', false);
+    sensorsES.onmessage = (e) => {
+      try {
+        const raw = JSON.parse(e.data);
+        // 映射为 UI 期望的字段名（temperature / timestamp 等）
+        // 允许同时兼容不同后端字段（temp/temperature, ts/timestamp）
+        const mapped = {
+          ...raw,
+          temperature:
+            typeof raw.temperature === 'number'
+              ? raw.temperature
+              : typeof raw.temp === 'number'
+              ? raw.temp
+              : undefined,
+          timestamp: raw.timestamp || raw.ts || undefined,
         };
-        break;
-      case 'SETPOINT_INC':
-        changes = {
-          ...(changes || {}),
-          setpointDelta: changes?.setpointDelta ?? 1,
-        };
-        break;
-      case 'BOOST_ALERT':
-        changes = {
-          ...(changes || {}),
-          hvac: changes?.hvac || 'BOOST',
-          alert: changes?.alert || 'stuffy room',
-        };
-        break;
-      case 'ALERT_HVAC_CHECK':
-        changes = {
-          ...(changes || {}),
-          alert: changes?.alert || 'HVAC check',
-        };
-        break;
-      default:
-        break;
-    }
+        callbacks.onSensor(mapped);
+      } catch {
+        // 忽略非 JSON
+      }
+    };
+
+    return true;
   }
 
-  return {
-    roomId,
-    ruleId,
-    ruleName: payload.ruleName || rule?.category,
-    summary: payload.msg || payload.summary || rule?.description,
-    triggeredAt,
-    action,
-    changes,
-    telemetry: Object.keys(telemetry).length ? telemetry : undefined,
-  };
-}
-
-function normaliseSensor(payload) {
-  if (!payload || typeof payload !== 'object') return null;
-  const roomId = payload.roomId || payload.room_id;
-  if (!roomId) return null;
-
-  const temperature = toNumber(payload.temp) ?? toNumber(payload.temperature);
-  const co2 = toNumber(payload.co2) ?? toNumber(payload.CO2);
-  const motion = toBoolean(payload.motion ?? payload.motion_active ?? payload.motionActive);
-
-  let lux;
-  const luxValue = toNumber(payload.lux) ?? toNumber(payload.light) ?? toNumber(payload.lightLevel);
-  if (Number.isFinite(luxValue)) {
-    lux = luxValue;
+  function stop() {
+    close(alertsES);
+    close(sensorsES);
+    alertsES = sensorsES = null;
+    callbacks.onStatusChange('alerts', false);
+    callbacks.onStatusChange('sensors', false);
   }
 
-  let doorState = payload.doorState || payload.door_state;
-  if (!doorState && typeof payload.door_closed === 'boolean') {
-    doorState = payload.door_closed ? 'CLOSED' : 'OPEN';
-  }
-
-  return {
-    roomId,
-    deviceId: payload.deviceId || payload.device_id,
-    temperature,
-    co2,
-    motion,
-    lux,
-    doorState: typeof doorState === 'string' ? doorState.toUpperCase() : doorState,
-    timestamp: parseTimestamp(payload.ts ?? payload.timestamp ?? payload.time ?? payload.ingestedAt),
-  };
-}
-
-function createSource(url, normalise, onMessage, onStatusChange, key) {
-  if (!url || typeof EventSource === 'undefined') {
-    return null;
-  }
-
-  let connected = false;
-  const source = new EventSource(url);
-
-  source.onopen = () => {
-    connected = true;
-    onStatusChange?.(key, true);
-  };
-
-  source.onmessage = (event) => {
-    try {
-      const data = JSON.parse(event.data);
-      const normalised = normalise(data);
-      if (normalised) {
-        onMessage(normalised);
-      }
-    } catch (error) {
-      console.error(`Failed to parse event from ${url}`, error);
-    }
-  };
-
-  source.onerror = (event) => {
-    console.warn(`EventSource connection lost for ${url}`, event);
-    onStatusChange?.(key, false);
-    connected = false;
-  };
-
-  return source;
-}
-
-export default function createKafkaBridge({ onAlert, onSensor, onStatusChange } = {}) {
-  const base = (import.meta.env.VITE_KAFKA_BRIDGE_BASE_URL || '').replace(/\/?$/, '');
-  const alertsUrl = import.meta.env.VITE_ALERTS_STREAM_URL || (base ? `${base}/stream/alerts` : '');
-  const sensorsUrl = import.meta.env.VITE_SENSORS_STREAM_URL || (base ? `${base}/stream/input` : '');
-
-  let alertSource = null;
-  let sensorSource = null;
-
-  return {
-    start() {
-      let started = false;
-      if (alertsUrl && typeof onAlert === 'function') {
-        alertSource = createSource(alertsUrl, normaliseAlert, onAlert, onStatusChange, 'alerts');
-        if (alertSource) {
-          started = true;
-        }
-      }
-      if (sensorsUrl && typeof onSensor === 'function') {
-        sensorSource = createSource(sensorsUrl, normaliseSensor, onSensor, onStatusChange, 'sensors');
-        if (sensorSource) {
-          started = true;
-        }
-      }
-      return started;
-    },
-    stop() {
-      if (alertSource) {
-        alertSource.close();
-        onStatusChange?.('alerts', false);
-        alertSource = null;
-      }
-      if (sensorSource) {
-        sensorSource.close();
-        onStatusChange?.('sensors', false);
-        sensorSource = null;
-      }
-    },
-  };
+  const api = { start, stop, urls: { alerts: '', sensors: '' } };
+  return api;
 }

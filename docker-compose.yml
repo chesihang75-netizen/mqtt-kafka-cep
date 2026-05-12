@@ -1,21 +1,21 @@
-version: "3.9"
-
 services:
-  # ---------- MQTT Broker ----------
   mqtt:
     image: eclipse-mosquitto:2
     container_name: mqtt
     restart: unless-stopped
-    ports: ["1883:1883"]
+    ports:
+      - "1883:1883"
     volumes:
       - ./mqtt/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+    networks:
+      - smart-building-network
 
-  # ---------- Apache Kafka (KRaft 单机) ----------
   kafka:
     image: apache/kafka:latest
     container_name: kafka
     restart: unless-stopped
-    ports: ["9092:9092"]   # 主机用 localhost:9092 访问
+    ports:
+      - "9092:9092"
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
@@ -25,100 +25,124 @@ services:
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9094
       KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
-      # 便捷配置
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
       KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 1
+      KAFKA_NUM_PARTITIONS: 3
     volumes:
       - kafka_data:/var/lib/kafka/data
+    networks:
+      - smart-building-network
 
-  # ---------- ksqlDB ----------
-  ksqldb-server:
-    image: confluentinc/ksqldb-server:latest
-    container_name: ksqldb-server
-    restart: unless-stopped
-    depends_on: [kafka]
-    ports: ["8088:8088"]
-    environment:
-      KSQL_LISTENERS: http://0.0.0.0:8088
-      KSQL_BOOTSTRAP_SERVERS: kafka:9093
-      KSQL_KSQL_SERVICE_ID: ksql_1
-      KSQL_KSQL_STREAMS_PROCESSING_GUARANTEE: at_least_once
-      KSQL_KSQL_LOGGING_PROCESSING_STREAM_AUTO_CREATE: "true"
-      KSQL_KSQL_LOGGING_PROCESSING_TOPIC_AUTO_CREATE: "true"
-      KSQL_HEAP_OPTS: "-Xms512m -Xmx512m"
-    volumes:
-      - ./ksql:/scripts
-
-  ksqldb-cli:
-    image: confluentinc/ksqldb-cli:latest
-    container_name: ksqldb-cli
-    depends_on: [ksqldb-server]
-    entrypoint: ["/bin/sh","-c","sleep infinity"]
-    volumes:
-      - ./ksql:/scripts
-
-  # ---------- Kafka UI ----------
   kafka-ui:
     image: provectuslabs/kafka-ui:latest
     container_name: kafka-ui
     restart: unless-stopped
-    depends_on: [kafka]
-    ports: ["8080:8080"]
+    depends_on:
+      - kafka
+    ports:
+      - "8080:8080"
     environment:
       KAFKA_CLUSTERS_0_NAME: local
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9093
       KAFKA_CLUSTERS_0_READONLY: "false"
+    networks:
+      - smart-building-network
 
-  # ---------- MQTT -> Kafka ----------
   mqtt-to-kafka:
     build: ./bridge
     container_name: mqtt-to-kafka
     restart: unless-stopped
-    depends_on: [mqtt, kafka]
+    depends_on:
+      - mqtt
+      - kafka
+    environment:
+      MQTT_HOST: mqtt
+      MQTT_PORT: "1883"
+      MQTT_TOPIC: "iot/input"
+      KAFKA_BOOTSTRAP_SERVERS: "kafka:9093"
+      KAFKA_TOPIC: "iot.input"
+    networks:
+      - smart-building-network
 
-  # ---------- Kafka -> MQTT ----------
   kafka-to-mqtt:
     build: ./bridge-out
     container_name: kafka-to-mqtt
     restart: unless-stopped
-    depends_on: [mqtt, kafka]
+    depends_on:
+      - mqtt
+      - kafka
+    environment:
+      MQTT_HOST: mqtt
+      MQTT_PORT: "1883"
+      MQTT_TOPIC: "iot/alerts"
+      KAFKA_BOOTSTRAP_SERVERS: "kafka:9093"
+      KAFKA_TOPIC: "iot.alerts"
+    networks:
+      - smart-building-network
 
-  # ---------- 心跳 Ticker ----------
   ticker:
     build: ./ticker
     container_name: ticker
     restart: unless-stopped
-    depends_on: [kafka]
+    depends_on:
+      - kafka
     environment:
       TICKER_ROOM_IDS: "CR-101,CR-102,CR-103,CR-104,CR-105"
       TICKER_SITE_ID: "MAIN"
+      TICKER_BUILDING_IDS: "B01,B02,B03"
+    networks:
+      - smart-building-network
 
-  # ---------- Siddhi Runner ----------
-  siddhi-runner:
+  siddhi-runner-1:
     image: siddhiio/siddhi-runner-alpine:latest
-    container_name: siddhi-runner
     restart: unless-stopped
-    depends_on: [kafka]
+    depends_on:
+      - kafka
     environment:
-      - JAVA_OPTS=-Xms256m -Xmx512m
-    # 关键：启动时删除内置旧版 siddhi-io-kafka，再把我们挂进来的依赖复制到 /lib & /_lib
-    command: >
-      sh -lc "
-        rm -f /home/siddhi_user/siddhi-runner/lib/siddhi-io-kafka-*.jar
-              /home/siddhi_user/siddhi-runner/_lib/siddhi-io-kafka-*.jar ;
-        cp -f /home/siddhi_user/siddhi-runner/wso2/runner/deployment/libs/*.jar /home/siddhi_user/siddhi-runner/lib/  || true ;
-        cp -f /home/siddhi_user/siddhi-runner/wso2/runner/deployment/libs/*.jar /home/siddhi_user/siddhi-runner/_lib/ || true ;
-        /home/siddhi_user/siddhi-runner/bin/runner.sh
-      "
+      - JAVA_OPTS=-Xms512m -Xmx1024m
     volumes:
-      # 你的 Siddhi 应用（保持目录→目录挂载）
-      - ./siddhi-apps:/home/siddhi_user/siddhi-runner/wso2/runner/deployment/siddhi-files
-      # 把依赖 JAR 放在本地 ./siddhi-libs，下方两行会在启动时复制到类路径
-      - ./siddhi-libs:/home/siddhi_user/siddhi-runner/wso2/runner/deployment/libs
+      - ./siddhi-apps:/home/siddhi_user/siddhi-runner/deployment/siddhi-files
+      - ./siddhi-libs:/home/siddhi_user/siddhi-runner/lib
+    networks:
+      - smart-building-network
+
+  siddhi-runner-2:
+    image: siddhiio/siddhi-runner-alpine:latest
+    restart: unless-stopped
+    depends_on:
+      - kafka
+    environment:
+      - JAVA_OPTS=-Xms512m -Xmx1024m
+    volumes:
+      - ./siddhi-apps:/home/siddhi_user/siddhi-runner/deployment/siddhi-files
+      - ./siddhi-libs:/home/siddhi_user/siddhi-runner/lib
+    networks:
+      - smart-building-network
+
+  siddhi-runner-3:
+    image: siddhiio/siddhi-runner-alpine:latest
+    restart: unless-stopped
+    depends_on:
+      - kafka
+    environment:
+      - JAVA_OPTS=-Xms512m -Xmx1024m
+    volumes:
+      - ./siddhi-apps:/home/siddhi_user/siddhi-runner/deployment/siddhi-files
+      - ./siddhi-libs:/home/siddhi_user/siddhi-runner/lib
+    networks:
+      - smart-building-network
+
+# 关键修复：指定使用外部已创建的网络
+networks:
+  smart-building-network:
+    external: true
+    driver: bridge
 
 volumes:
   kafka_data:
+    driver: local

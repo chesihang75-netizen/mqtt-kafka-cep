@@ -104,6 +104,13 @@ const rules = [
     description: 'Temperature >25 °C for 15 minutes with CO₂ >1000 ppm → HVAC BOOST + alert “stuffy room”.',
     changes: { hvac: 'BOOST', alert: 'stuffy room' },
   },
+  {
+  id: 'R16',
+  room: 'CR-101',
+  category: 'Lighting comfort',
+  description: 'Motion detected and lux <200 → Lights ON 80%.',
+  changes: { lights: 'ON 80%' },
+  },
 ];
 
 export default rules;
